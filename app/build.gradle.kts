@@ -5,6 +5,32 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+/*
+ * External configuration precedence:
+ *
+ * 1. Environment variable
+ * 2. Local secrets.properties (never committed)
+ * 3. secrets.defaults.properties (safe empty defaults)
+ *
+ * API credentials must never be committed to the repository.
+ */
+val runTrackSecrets = java.util.Properties().apply {
+    val defaultsFile = rootProject.file("secrets.defaults.properties")
+    if (defaultsFile.isFile) {
+        defaultsFile.inputStream().use { load(it) }
+    }
+
+    val localSecretsFile = rootProject.file("secrets.properties")
+    if (localSecretsFile.isFile) {
+        localSecretsFile.inputStream().use { load(it) }
+    }
+}
+
+val mapsApiKey: String =
+    providers.environmentVariable("MAPS_API_KEY").orNull
+        ?.takeIf { it.isNotBlank() }
+        ?: runTrackSecrets.getProperty("MAPS_API_KEY", "")
+
 android {
     namespace = "com.runtrack.app"
     compileSdk = 36
@@ -16,6 +42,10 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = 7
         versionName = "0.7.0-functional-core"
+
+        // Used later by Maps SDK manifest metadata.
+        // Empty value is valid until Maps integration is enabled.
+        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
     }
 
     buildTypes {
