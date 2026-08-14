@@ -102,6 +102,7 @@ dependencies {
     implementation("androidx.room:room-ktx:2.8.4")
     ksp("androidx.room:room-compiler:2.8.4")
     implementation("com.google.android.gms:play-services-location:21.4.0")
+    implementation("com.google.android.gms:play-services-maps:20.0.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:core-ktx:1.7.0")
     androidTestImplementation("androidx.test:runner:1.7.0")
