@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
@@ -36,21 +36,175 @@ jobs:
         with:
           gradle-version: "8.13"
 
+      - name: Prepare diagnostic logs
+        run: mkdir -p ci-logs
+
+      # -------------------------------------------------
+      # 1. Основной Kotlin-код
+      # -------------------------------------------------
+      - name: Main Kotlin compile
+        id: compile
+        continue-on-error: true
+        run: |
+          set +e
+          gradle --no-daemon --continue --console=plain \
+            :app:compileDebugKotlin \
+            2>&1 | tee ci-logs/01-main-kotlin-compile.log
+          CODE=${PIPESTATUS[0]}
+          echo "exit_code=$CODE"
+          exit "$CODE"
+
+      # -------------------------------------------------
+      # 2. Unit tests
+      # -------------------------------------------------
       - name: Unit tests
-        run: gradle --no-daemon :app:testDebugUnitTest
+        id: unit
+        continue-on-error: true
+        run: |
+          set +e
+          gradle --no-daemon --continue --console=plain \
+            :app:testDebugUnitTest \
+            2>&1 | tee ci-logs/02-unit-tests.log
+          CODE=${PIPESTATUS[0]}
+          echo "exit_code=$CODE"
+          exit "$CODE"
 
+      # -------------------------------------------------
+      # 3. Android tests compile
+      # -------------------------------------------------
       - name: Compile Android tests
-        run: gradle --no-daemon :app:compileDebugAndroidTestKotlin
+        id: android_tests
+        continue-on-error: true
+        run: |
+          set +e
+          gradle --no-daemon --continue --console=plain \
+            :app:compileDebugAndroidTestKotlin \
+            2>&1 | tee ci-logs/03-android-tests.log
+          CODE=${PIPESTATUS[0]}
+          echo "exit_code=$CODE"
+          exit "$CODE"
 
-      - name: Android lint
-        run: gradle --no-daemon :app:lintDebug
+      # -------------------------------------------------
+      # 4. FULL LINT
+      # -------------------------------------------------
+      - name: Android lint - FULL REPORT
+        id: lint
+        continue-on-error: true
+        run: |
+          set +e
 
+          gradle --no-daemon --continue --console=plain \
+            :app:lintDebug \
+            2>&1 | tee ci-logs/04-lint-gradle.log
+
+          CODE=${PIPESTATUS[0]}
+
+          REPORT="app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt"
+
+          echo
+          echo "============================================================"
+          echo "FULL ANDROID LINT REPORT"
+          echo "============================================================"
+
+          if [ -f "$REPORT" ]; then
+            cp "$REPORT" ci-logs/05-lint-full-report.txt
+            cat "$REPORT"
+          else
+            echo "Lint text report was not generated."
+          fi
+
+          echo
+          echo "Lint exit code: $CODE"
+          exit "$CODE"
+
+      # -------------------------------------------------
+      # 5. Всё равно пытаемся собрать APK,
+      # даже если lint/tests уже красные
+      # -------------------------------------------------
       - name: Build debug APK
-        run: gradle --no-daemon :app:assembleDebug
+        id: apk
+        continue-on-error: true
+        run: |
+          set +e
+          gradle --no-daemon --continue --console=plain \
+            :app:assembleDebug \
+            2>&1 | tee ci-logs/06-assemble-debug.log
+          CODE=${PIPESTATUS[0]}
+          echo "exit_code=$CODE"
+          exit "$CODE"
 
+      # -------------------------------------------------
+      # Краткая выборка всех Error/Exception
+      # -------------------------------------------------
+      - name: Collect error summary
+        if: always()
+        run: |
+          {
+            echo "============================================================"
+            echo "RUNTRACK ERROR SUMMARY"
+            echo "============================================================"
+            echo
+
+            grep -RniE \
+              '(^|[[:space:]])(e:|error:|Error:|FAILURE:|Exception|Caused by:|FAILED)' \
+              ci-logs \
+              || true
+          } | tee ci-logs/00-error-summary.txt
+
+      # -------------------------------------------------
+      # Все диагностические материалы сохраняются
+      # даже при красной сборке
+      # -------------------------------------------------
+      - name: Upload full diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RunTrack-full-diagnostics
+          path: |
+            ci-logs/
+            app/build/reports/lint-results-debug.*
+            app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+            app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: warn
+
+      # Если APK реально построился — отдельный удобный artifact
       - name: Upload APK
+        if: always() && steps.apk.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: RunTrack-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # -------------------------------------------------
+      # Финальный статус. Только здесь CI окончательно падает.
+      # -------------------------------------------------
+      - name: Final CI gate
+        if: always()
+        run: |
+          echo "========================================"
+          echo "RUNTRACK FINAL STATUS"
+          echo "========================================"
+          echo "Main compile:   ${{ steps.compile.outcome }}"
+          echo "Unit tests:     ${{ steps.unit.outcome }}"
+          echo "Android tests:  ${{ steps.android_tests.outcome }}"
+          echo "Lint:           ${{ steps.lint.outcome }}"
+          echo "APK build:      ${{ steps.apk.outcome }}"
+          echo "========================================"
+
+          FAILED=0
+
+          [ "${{ steps.compile.outcome }}" = "success" ] || FAILED=1
+          [ "${{ steps.unit.outcome }}" = "success" ] || FAILED=1
+          [ "${{ steps.android_tests.outcome }}" = "success" ] || FAILED=1
+          [ "${{ steps.lint.outcome }}" = "success" ] || FAILED=1
+          [ "${{ steps.apk.outcome }}" = "success" ] || FAILED=1
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "❌ Есть ошибки. Смотри RunTrack-full-diagnostics."
+            exit 1
+          fi
+
+          echo "✅ Все проверки и APK успешно завершены."
