@@ -13,7 +13,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -41,13 +40,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.runtrack.app.data.RoutePointEntity
+import com.runtrack.app.data.WeatherSnapshotEntity
 import com.runtrack.app.data.WorkoutEntity
 import com.runtrack.app.data.WorkoutWithRoute
 import com.runtrack.app.domain.*
 import com.runtrack.app.export.*
+import com.runtrack.app.health.HealthConnectAvailability
+import com.runtrack.app.maps.RunTrackRouteMap
 import com.runtrack.app.tracking.BleHeartRateState
+import com.runtrack.app.weather.WeatherFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -483,6 +487,7 @@ private fun ActiveWorkoutScreen(viewModel: RunTrackViewModel, onNavigate: (Int) 
             .orEmpty()
     }
     val calories = current?.let { WorkoutMath.estimatedCalories(type, it.movingMillis, it.distanceMeters, settings.weightKg) } ?: 0
+    val weather = relation?.weatherSnapshots?.maxByOrNull { it.capturedAt }
     val performance = if (type == WorkoutType.BIKE) RunTrackFormatter.speed(metrics?.averageSpeedMps ?: 0.0, settings.units) else RunTrackFormatter.pace(metrics?.paceSecondsPerKm, settings.units)
     val workoutSubtitle = if (current?.status == WorkoutStatus.AUTO_PAUSED) "Автопауза · ждём движения" else "Тренировка идёт"
     NativePage(title = workoutTypeTitle(type), subtitle = workoutSubtitle, onNavigate = onNavigate) {
@@ -495,8 +500,10 @@ private fun ActiveWorkoutScreen(viewModel: RunTrackViewModel, onNavigate: (Int) 
             Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                 MetricBox("Время", RunTrackFormatter.duration(current?.elapsedMillis ?: 0L), Modifier.weight(1f))
                 MetricBox(if (type == WorkoutType.BIKE) "Скорость" else "Темп", performance, Modifier.weight(1f))
-                MetricBox("Ккал", calories.toString(), Modifier.weight(1f))
+                MetricBox("Ккал", RunTrackFormatter.caloriesNumber(calories), Modifier.weight(1f))
             }
+            Spacer(Modifier.height(9.dp))
+            WeatherSummaryCard(weather, settings.units, "Погода появится после первого GPS-обновления")
             current?.goal?.takeIf { it.kind != GoalKind.NONE }?.let {
                 Spacer(Modifier.height(9.dp))
                 Text(goalProgressText(current, settings.units), color = if (current.goalReached) RtGreen else RtMuted, fontSize = 10.sp)
@@ -533,7 +540,7 @@ private fun PausedWorkoutScreen(viewModel: RunTrackViewModel, onNavigate: (Int) 
             Spacer(Modifier.height(26.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                 MetricBox(if (type == WorkoutType.BIKE) "Средняя скорость" else "Средний темп", performance, Modifier.weight(1f))
-                MetricBox("Калории", "$calories ккал", Modifier.weight(1f))
+                MetricBox("Калории", RunTrackFormatter.calories(calories), Modifier.weight(1f))
             }
             current?.goal?.takeIf { it.kind != GoalKind.NONE }?.let {
                 Spacer(Modifier.height(9.dp))
@@ -574,7 +581,7 @@ private fun FinishWorkoutScreen(viewModel: RunTrackViewModel, onNavigate: (Int) 
             Spacer(Modifier.height(22.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                 MetricBox(if (type == WorkoutType.BIKE) "Скорость" else "Темп", performance, Modifier.weight(1f))
-                MetricBox("Калории", calories.toString(), Modifier.weight(1f))
+                MetricBox("Калории", RunTrackFormatter.caloriesNumber(calories), Modifier.weight(1f))
                 MetricBox("Набор", RunTrackFormatter.elevation(elevation?.first, settings.units), Modifier.weight(1f))
             }
             Spacer(Modifier.height(14.dp)); InfoRow(Icons.Outlined.FavoriteBorder, "Средний пульс", relation?.heartRateSamples?.map { it.bpm }?.takeIf { it.isNotEmpty() }?.average()?.toInt()?.let { "$it уд/мин" } ?: "Нет данных", RtRed)
@@ -604,8 +611,14 @@ private fun ResultOverviewScreen(viewModel: RunTrackViewModel, onNavigate: (Int)
         Spacer(Modifier.height(9.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
             MetricBox(if (type == WorkoutType.BIKE) "Средняя скорость" else "Средний темп", if (type == WorkoutType.BIKE) RunTrackFormatter.speed(w.averageSpeedMps, settings.units) else RunTrackFormatter.pace(metrics.paceSecondsPerKm, settings.units), Modifier.weight(1f))
-            MetricBox("Калории", "${w.caloriesEstimate} ккал", Modifier.weight(1f))
+            MetricBox("Калории", RunTrackFormatter.calories(w.caloriesEstimate), Modifier.weight(1f))
         }
+        Spacer(Modifier.height(9.dp))
+        WeatherSummaryCard(
+            r.weatherSnapshots.maxByOrNull { it.capturedAt },
+            settings.units,
+            "Погода для этой тренировки не сохранена",
+        )
         Spacer(Modifier.height(14.dp)); SectionTitle("Показатели"); Spacer(Modifier.height(8.dp))
         InfoRow(Icons.Outlined.Speed, "Лучший темп", bestOneKm?.let { RunTrackFormatter.pace(it / 1000.0, settings.units) } ?: "Нет данных", RtGreen)
         Spacer(Modifier.height(8.dp)); InfoRow(Icons.Outlined.FavoriteBorder, "Пульс", w.heartRateAverageBpm?.let { avg -> "$avg средний · ${w.heartRateMaxBpm ?: avg} максимум" } ?: "Нет данных", RtRed)
@@ -667,7 +680,7 @@ private fun WorkoutDetailsScreen(viewModel: RunTrackViewModel, onNavigate: (Int)
             item { InfoRow(Icons.Outlined.Speed, if (type == WorkoutType.BIKE) "Средняя скорость" else "Средний темп", if (type == WorkoutType.BIKE) RunTrackFormatter.speed(w.averageSpeedMps, settings.units) else RunTrackFormatter.pace(metrics.paceSecondsPerKm, settings.units), RtGreen) }
             item { InfoRow(Icons.Outlined.Timer, "В движении", RunTrackFormatter.duration(w.movingMillis), RtBlue) }
             item { InfoRow(Icons.Outlined.FavoriteBorder, "Пульс", w.heartRateAverageBpm?.let { avg -> "$avg / ${w.heartRateMaxBpm ?: avg} уд/мин" } ?: "Нет данных", RtRed) }
-            item { InfoRow(Icons.Outlined.LocalFireDepartment, "Калории", "${w.caloriesEstimate} ккал · оценка", RtYellow) }
+            item { InfoRow(Icons.Outlined.LocalFireDepartment, "Калории", RunTrackFormatter.calories(w.caloriesEstimate), RtYellow) }
             item { InfoRow(Icons.Outlined.Terrain, "Высота", elevationPairText(w, settings.units), RtBlue) }
             item { InfoRow(Icons.Outlined.DirectionsRun, "Каденс", "Нет данных", RtGreen) }
             item { InfoRow(Icons.Outlined.Straighten, "Длина шага", "Нет данных", RtText2) }
@@ -756,7 +769,7 @@ private fun StatsOverviewScreen(viewModel: RunTrackViewModel, onNavigate: (Int) 
     StatsPage("Статистика", 0, onNavigate) {
         SectionTitle("Эта неделя"); Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) { MetricBox("Тренировок", s.workouts.toString(), Modifier.weight(1f), RtGreen); MetricBox("Дистанция", RunTrackFormatter.distance(s.distanceMeters, settings.units), Modifier.weight(1f)) }
-        Spacer(Modifier.height(9.dp)); Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) { MetricBox("Время", RunTrackFormatter.duration(s.elapsedMillis), Modifier.weight(1f)); MetricBox("Калории", s.calories.toString(), Modifier.weight(1f)) }
+        Spacer(Modifier.height(9.dp)); Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) { MetricBox("Время", RunTrackFormatter.duration(s.elapsedMillis), Modifier.weight(1f)); MetricBox("Калории", RunTrackFormatter.caloriesNumber(s.calories), Modifier.weight(1f)) }
         Spacer(Modifier.height(15.dp)); SectionTitle("По активности"); Spacer(Modifier.height(8.dp))
         val max = (s.byTypeDistanceMeters.values.maxOrNull() ?: 0.0).coerceAtLeast(1.0)
         ActivityProgress("Бег", RunTrackFormatter.distance(s.byTypeDistanceMeters[WorkoutType.RUN] ?: 0.0, settings.units), RtGreen, ((s.byTypeDistanceMeters[WorkoutType.RUN] ?: 0.0) / max).toFloat(), Icons.Outlined.DirectionsRun)
@@ -1228,12 +1241,21 @@ private fun ConnectionsScreen(viewModel: RunTrackViewModel, onNavigate: (Int) ->
     val devices by viewModel.heartRateDevices.collectAsStateWithLifecycle()
     val appSettings by viewModel.settings.collectAsStateWithLifecycle()
     val gps by viewModel.gpsReadiness.collectAsStateWithLifecycle()
+    val selectedWorkout by viewModel.selectedWorkout.collectAsStateWithLifecycle()
+    val healthConnect by viewModel.healthConnectState.collectAsStateWithLifecycle()
     val bt = remember { context.getSystemService(BluetoothManager::class.java)?.adapter }
     val btSupported = bt != null
     val scanPermission = if (android.os.Build.VERSION.SDK_INT >= 31) ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED else ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     val connectPermission = android.os.Build.VERSION.SDK_INT < 31 || ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.onPermissionStateChanged(); viewModel.refreshBluetoothState() }
-    LaunchedEffect(Unit) { viewModel.refreshBluetoothState(); viewModel.onPermissionStateChanged() }
+    val healthPermissionLauncher = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract()
+    ) { granted -> viewModel.onHealthConnectPermissionsResult(granted) }
+    LaunchedEffect(Unit) {
+        viewModel.refreshBluetoothState()
+        viewModel.onPermissionStateChanged()
+        viewModel.refreshHealthConnect()
+    }
 
     fun requestBlePermissions() {
         if (android.os.Build.VERSION.SDK_INT >= 31) permissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
@@ -1295,6 +1317,57 @@ private fun ConnectionsScreen(viewModel: RunTrackViewModel, onNavigate: (Int) ->
                 items(devices, key = { it.address }) { device ->
                     ConnectionCard(Icons.Outlined.FavoriteBorder, device.name, "RSSI ${device.rssi}", RtRed, "Подключить") { viewModel.connectHeartRateDevice(device.address) }
                 }
+            }
+            item {
+                val selected = selectedWorkout?.workout
+                val selectedId = selected?.id
+                val selectedCompleted = selected?.status == WorkoutStatus.COMPLETED.name
+                val currentMessage = healthConnect.message.takeUnless {
+                    healthConnect.lastExportedWorkoutId != selectedId && it == "Тренировка записана в Health Connect"
+                }
+                val healthSubtitle = currentMessage ?: when (healthConnect.availability) {
+                    HealthConnectAvailability.UNAVAILABLE -> "Недоступен на этом устройстве"
+                    HealthConnectAvailability.UPDATE_REQUIRED -> "Нужно установить или обновить Health Connect"
+                    HealthConnectAvailability.AVAILABLE -> when {
+                        !healthConnect.permissionsGranted -> "Только запись по вашему выбору · без GPS-маршрута"
+                        selectedId == null -> "Подключён · сначала откройте сохранённую тренировку"
+                        !selectedCompleted -> "Можно записать только завершённую тренировку"
+                        healthConnect.lastExportedWorkoutId == selectedId -> "Тренировка записана · GPS-маршрут не передан"
+                        else -> "Готов записать выбранную тренировку · без GPS-маршрута"
+                    }
+                }
+                val healthAction = when {
+                    healthConnect.inProgress -> "Запись…"
+                    healthConnect.availability == HealthConnectAvailability.UNAVAILABLE -> "Недоступно"
+                    healthConnect.availability == HealthConnectAvailability.UPDATE_REQUIRED -> "Обновить"
+                    !healthConnect.permissionsGranted -> "Разрешить"
+                    !selectedCompleted -> "Выберите"
+                    else -> "Экспорт"
+                }
+                val healthActionHandler: (() -> Unit)? = when {
+                    healthConnect.inProgress -> null
+                    healthConnect.availability == HealthConnectAvailability.UNAVAILABLE -> null
+                    healthConnect.availability == HealthConnectAvailability.UPDATE_REQUIRED -> {
+                        {
+                            runCatching { context.startActivity(viewModel.healthConnectSettingsIntent()) }
+                                .onFailure { Toast.makeText(context, "Не удалось открыть Health Connect", Toast.LENGTH_SHORT).show() }
+                        }
+                    }
+                    !healthConnect.permissionsGranted -> {
+                        { healthPermissionLauncher.launch(viewModel.healthConnectPermissions) }
+                    }
+                    !selectedCompleted -> null
+                    else -> viewModel::exportSelectedWorkoutToHealthConnect
+                }
+                ConnectionCard(
+                    Icons.Outlined.HealthAndSafety,
+                    "Health Connect",
+                    healthSubtitle,
+                    RtGreen,
+                    healthAction,
+                    positive = healthConnect.permissionsGranted,
+                    onClick = healthActionHandler,
+                )
             }
             item { ConnectionCard(Icons.Outlined.Cloud, "Облачная синхронизация", "Через SAF / DocumentProvider · только по выбору пользователя", RtGreen, "Настроить") { onNavigate(17) } }
             item {
@@ -1423,6 +1496,31 @@ private fun RoutePointEntity.asLocationSample(): LocationSample = LocationSample
 private fun elevationPairText(w: WorkoutEntity, units: UnitSystem): String = if (w.elevationGainMeters == null && w.elevationLossMeters == null) "Нет данных" else "+${RunTrackFormatter.elevation(w.elevationGainMeters ?: 0.0, units)} · −${RunTrackFormatter.elevation(w.elevationLossMeters ?: 0.0, units)}"
 
 @Composable
+private fun WeatherSummaryCard(
+    snapshot: WeatherSnapshotEntity?,
+    units: UnitSystem,
+    emptyText: String,
+) {
+    val display = remember(snapshot, units) { snapshot?.let { WeatherFormatter.format(it, units) } }
+    Row(
+        modifier = Modifier.fillMaxWidth().background(RtSurface, RoundedCornerShape(13.dp)).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(38.dp).background(RtBlue.copy(alpha = 0.14f), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Outlined.Cloud, null, tint = RtBlue, modifier = Modifier.size(21.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(display?.headline ?: "Погода", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+            Text(display?.details ?: emptyText, color = RtMuted, fontSize = 9.sp)
+        }
+    }
+}
+
+@Composable
 private fun MissingScreen(index: Int, onNavigate: (Int) -> Unit) {
     NativePage(
         title = "Экран ${index + 1}",
@@ -1438,47 +1536,12 @@ private fun MissingScreen(index: Int, onNavigate: (Int) -> Unit) {
 
 @Composable
 private fun LiveRouteMap(segments: List<List<LocationSample>>, layer: MapLayer, onLayer: () -> Unit, modifier: Modifier = Modifier) {
-    RouteCanvas(modifier, segments, layer, onLayer)
+    RunTrackRouteMap(segments, layer, onLayer, modifier)
 }
 
 @Composable
 private fun RouteCanvas(modifier: Modifier = Modifier, routes: List<List<LocationSample>>, layer: MapLayer, onLayer: () -> Unit) {
-    val cleanRoutes = remember(routes) { routes.map { RouteGeometry.downsampleForRender(it) }.filter { it.isNotEmpty() } }
-    var pan by remember(cleanRoutes) { mutableStateOf(Offset.Zero) }
-    Box(modifier.background(if (layer == MapLayer.STANDARD) Color(0xFF0C1821) else Color(0xFF0E1B16), RoundedCornerShape(16.dp))) {
-        Canvas(Modifier.fillMaxSize().pointerInput(cleanRoutes) { detectDragGestures { _, dragAmount -> pan = Offset(pan.x + dragAmount.x, pan.y + dragAmount.y) } }) {
-            val w = size.width; val h = size.height
-            val road = if (layer == MapLayer.STANDARD) Color(0xFF20313C) else Color(0xFF244032); val minor = if (layer == MapLayer.STANDARD) Color(0xFF172630) else Color(0xFF172D23)
-            for (i in 0..8) { val y = h * (0.08f + i * 0.12f); drawLine(if (i % 2 == 0) road else minor, Offset(0f, y), Offset(w, y - h * 0.16f), if (i % 2 == 0) 1.2.dp.toPx() else 0.7.dp.toPx()) }
-            val colors = listOf(RtGreen, RtBlue, RtYellow, Color(0xFFAB7CFF))
-            val normalizedRoutes = RouteGeometry.normalizeRoutes(cleanRoutes, w, h, 24.dp.toPx())
-            val displayed = normalizedRoutes.mapIndexed { index, normalizedRaw -> index to normalizedRaw.map { Offset(it.x + pan.x, it.y + pan.y) } }
-            displayed.forEach { (index, normalized) ->
-                val color = colors[index % colors.size]
-                if (normalized.size == 1) drawCircle(color, 4.dp.toPx(), normalized[0])
-                else if (normalized.size >= 2) {
-                    val p = Path().apply { moveTo(normalized.first().x, normalized.first().y); normalized.drop(1).forEach { lineTo(it.x, it.y) } }
-                    drawPath(p, color, style = Stroke(4.dp.toPx(), cap = StrokeCap.Round))
-                }
-            }
-            displayed.firstOrNull { it.second.isNotEmpty() }?.second?.firstOrNull()?.let { drawCircle(RtGreen, 5.dp.toPx(), it) }
-            displayed.lastOrNull { it.second.isNotEmpty() }?.second?.lastOrNull()?.let { drawCircle(RtGreen, 7.dp.toPx(), it, style = Stroke(2.dp.toPx())) }
-        }
-        if (cleanRoutes.isEmpty()) Text("Маршрут недоступен", color = RtMuted, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center))
-        Row(Modifier.align(Alignment.TopEnd).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-            MapIcon(Icons.Outlined.MyLocation, "Центрировать маршрут", enabled = cleanRoutes.isNotEmpty()) { pan = Offset.Zero }
-            MapIcon(Icons.Outlined.Layers, "Слой карты", onClick = onLayer)
-        }
-    }
-}
-
-@Composable
-private fun MapIcon(icon: ImageVector, description: String, enabled: Boolean = true, onClick: () -> Unit) {
-    Box(Modifier.size(48.dp).clickable(enabled = enabled, onClick = onClick), contentAlignment = Alignment.Center) {
-        Box(Modifier.size(32.dp).background(Color(0xAA101D26), CircleShape), contentAlignment = Alignment.Center) {
-            Icon(icon, description, tint = if (enabled) RtText2 else RtMuted.copy(alpha = 0.5f), modifier = Modifier.size(17.dp))
-        }
-    }
+    RunTrackRouteMap(routes, layer, onLayer, modifier)
 }
 
 @Composable

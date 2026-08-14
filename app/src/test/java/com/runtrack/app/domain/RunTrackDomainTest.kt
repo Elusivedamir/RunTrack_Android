@@ -20,6 +20,14 @@ class RunTrackDomainTest {
         assertNull(zero.paceSecondsPerKm)
     }
 
+    @Test fun calorieEstimateNeverInventsDefaultWeight() {
+        val hour = 3_600_000L
+        assertEquals(0, WorkoutMath.estimatedCalories(WorkoutType.RUN, hour, 10_000.0, null))
+        assertEquals(0, WorkoutMath.estimatedCalories(WorkoutType.RUN, hour, 10_000.0, Double.NaN))
+        assertEquals(0, WorkoutMath.estimatedCalories(WorkoutType.RUN, hour, 10_000.0, 29.9))
+        assertEquals(700, WorkoutMath.estimatedCalories(WorkoutType.RUN, hour, 10_000.0, 70.0))
+    }
+
     @Test fun gpsFilterRejectsJumpAndDuplicate() {
         val filter = GpsPointFilter(GpsFilterPolicy.forType(WorkoutType.RUN))
         val a = LocationSample(1_000, 52.5200, 13.4050, 5f)

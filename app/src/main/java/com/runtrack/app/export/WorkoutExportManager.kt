@@ -190,7 +190,7 @@ class WorkoutExportManager(private val context: Context) {
             RunTrackFormatter.speed(metrics.averageSpeedMps, units)
         } else RunTrackFormatter.pace(metrics.paceSecondsPerKm, units)
         canvas.drawText(third, 110f, 1715f, white)
-        canvas.drawText("${relation.workout.caloriesEstimate} ккал", 850f, 1715f, white)
+        canvas.drawText(RunTrackFormatter.calories(relation.workout.caloriesEstimate), 850f, 1715f, white)
         muted.textSize = 34f
         canvas.drawText(if (relation.workout.type == WorkoutType.BIKE.name) "Средняя скорость" else "Средний темп", 112f, 1770f, muted)
         canvas.drawText("Калории · оценка", 852f, 1770f, muted)

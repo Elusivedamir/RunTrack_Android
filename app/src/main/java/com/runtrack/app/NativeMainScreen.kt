@@ -1,11 +1,8 @@
 package com.runtrack.app
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -14,19 +11,15 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.runtrack.app.data.WorkoutWithRoute
 import com.runtrack.app.domain.*
+import com.runtrack.app.maps.RunTrackRouteMap
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -137,45 +130,7 @@ private fun RouteMap(relation: WorkoutWithRoute?, layer: MapLayer, onLayer: () -
             ?.map { segment -> RouteGeometry.downsampleForRender(segment.sortedBy { it.movingElapsedMillis }.map { it.toSample() }) }
             ?.filter { it.isNotEmpty() }.orEmpty()
     }
-    var pan by remember(relation?.workout?.id) { mutableStateOf(Offset.Zero) }
-    Box(modifier.background(if (layer == MapLayer.STANDARD) Color(0xFF0C1821) else Color(0xFF0E1B16), RoundedCornerShape(16.dp))) {
-        Canvas(Modifier.fillMaxSize().pointerInput(segments) {
-            detectDragGestures { _, dragAmount -> pan = Offset(pan.x + dragAmount.x, pan.y + dragAmount.y) }
-        }) {
-            val w = size.width; val h = size.height
-            val road = if (layer == MapLayer.STANDARD) Color(0xFF20313C) else Color(0xFF244032)
-            val minor = if (layer == MapLayer.STANDARD) Color(0xFF172630) else Color(0xFF172D23)
-            for (i in 0..8) {
-                val y = h * (0.10f + i * 0.11f)
-                drawLine(if (i % 2 == 0) road else minor, Offset(0f, y), Offset(w, y - h * 0.18f), if (i % 2 == 0) 1.2.dp.toPx() else 0.7.dp.toPx())
-            }
-            val normalizedSegments = RouteGeometry.normalizeRoutes(segments, w, h, 24.dp.toPx())
-                .map { segment -> segment.map { Offset(it.x + pan.x, it.y + pan.y) } }
-            normalizedSegments.forEach { normalized ->
-                if (normalized.size == 1) drawCircle(Green, 4.dp.toPx(), normalized.first())
-                else if (normalized.size >= 2) {
-                    val path = Path().apply { moveTo(normalized.first().x, normalized.first().y); normalized.drop(1).forEach { lineTo(it.x, it.y) } }
-                    drawPath(path, Green, style = Stroke(4.dp.toPx(), cap = StrokeCap.Round))
-                }
-            }
-            normalizedSegments.firstOrNull { it.isNotEmpty() }?.firstOrNull()?.let { drawCircle(Green, 5.dp.toPx(), it) }
-            normalizedSegments.lastOrNull { it.isNotEmpty() }?.lastOrNull()?.let { drawCircle(Green, 7.dp.toPx(), it, style = Stroke(2.dp.toPx())) }
-        }
-        if (segments.isEmpty()) Text("Маршрутов пока нет", color = Muted, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center))
-        Row(Modifier.align(Alignment.TopEnd).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-            SmallMapButton(Icons.Outlined.MyLocation, "Центрировать маршрут", enabled = segments.isNotEmpty()) { pan = Offset.Zero }
-            SmallMapButton(Icons.Outlined.Layers, "Слой карты", onClick = onLayer)
-        }
-    }
-}
-
-@Composable
-private fun SmallMapButton(icon: ImageVector, description: String, enabled: Boolean = true, onClick: () -> Unit) {
-    Box(Modifier.size(48.dp).clickable(enabled = enabled, onClick = onClick), contentAlignment = Alignment.Center) {
-        Box(Modifier.size(32.dp).background(Color(0xAA101D26), CircleShape), contentAlignment = Alignment.Center) {
-            Icon(icon, description, tint = if (enabled) Color(0xFFAEB8BE) else Muted.copy(alpha = 0.5f), modifier = Modifier.size(17.dp))
-        }
-    }
+    RunTrackRouteMap(segments, layer, onLayer, modifier)
 }
 
 @Composable

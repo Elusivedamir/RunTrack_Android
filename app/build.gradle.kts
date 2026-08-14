@@ -103,6 +103,9 @@ dependencies {
     ksp("androidx.room:room-compiler:2.8.4")
     implementation("com.google.android.gms:play-services-location:21.4.0")
     implementation("com.google.android.gms:play-services-maps:20.0.0")
+    // Keep the Maps Compose line compatible with this project's Kotlin 2.2 compiler.
+    implementation("com.google.maps.android:maps-compose:7.0.0")
+    implementation("androidx.health.connect:connect-client:1.1.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:core-ktx:1.7.0")
     androidTestImplementation("androidx.test:runner:1.7.0")

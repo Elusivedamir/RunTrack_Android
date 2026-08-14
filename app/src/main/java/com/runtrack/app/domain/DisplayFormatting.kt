@@ -50,4 +50,8 @@ object RunTrackFormatter {
         return if (units == UnitSystem.METRIC) String.format(locale, "%.0f м", safe)
         else String.format(locale, "%.0f ft", safe * 3.280839895)
     }
+
+    fun calories(value: Int): String = if (value > 0) "$value ккал" else "Нет данных"
+
+    fun caloriesNumber(value: Int): String = if (value > 0) value.toString() else "—"
 }

@@ -139,7 +139,9 @@ object WorkoutMath {
     fun estimatedCalories(type: WorkoutType, movingMillis: Long, distanceMeters: Double, weightKg: Double?): Int {
         val hours = movingMillis.coerceAtLeast(0) / 3_600_000.0
         if (hours <= 0.0) return 0
-        val weight = weightKg?.takeIf { it.isFinite() && it in 30.0..300.0 } ?: 70.0
+        // A missing or invalid weight means that calories are unknown. Never invent a 70 kg
+        // profile: zero is the persisted "not available" sentinel used by the existing schema.
+        val weight = weightKg?.takeIf { it.isFinite() && it in 30.0..300.0 } ?: return 0
         val km = distanceMeters.coerceAtLeast(0.0) / 1000.0
         val met = when (type) {
             WorkoutType.RUN -> (km / hours).let { if (it >= 10) 10.0 else 8.3 }

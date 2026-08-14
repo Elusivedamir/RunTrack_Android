@@ -11,8 +11,11 @@ import androidx.lifecycle.viewModelScope
 import com.runtrack.app.data.WorkoutEntity
 import com.runtrack.app.data.WorkoutWithRoute
 import com.runtrack.app.domain.*
+import com.runtrack.app.health.HealthConnectAvailability
+import com.runtrack.app.health.HealthConnectManager
 import com.runtrack.app.settings.RunTrackSettings
 import com.runtrack.app.tracking.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
@@ -31,6 +34,14 @@ sealed interface UiOperationState {
 }
 
 data class DailyStatPoint(val epochDay: Long, val distanceMeters: Double, val durationMillis: Long)
+
+data class HealthConnectUiState(
+    val availability: HealthConnectAvailability = HealthConnectAvailability.UNAVAILABLE,
+    val permissionsGranted: Boolean = false,
+    val inProgress: Boolean = false,
+    val message: String? = null,
+    val lastExportedWorkoutId: String? = null,
+)
 
 data class RunTrackStatsUiState(
     val all: PeriodStats = StatisticsCalculator.aggregate(emptyList()),
@@ -56,6 +67,7 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
     private val exportManager = runtime.exportManager
     private val heartRateManager = runtime.heartRateManager
     private val resultNotificationManager = runtime.resultNotificationManager
+    private val healthConnectManager = HealthConnectManager(appContext)
     private val gpsChecker = GpsReadinessChecker(appContext)
     private val actionMutex = Mutex()
 
@@ -100,6 +112,11 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
     val liveTracking: StateFlow<TrackingSnapshot?> = _liveTracking.asStateFlow()
     val heartRateState: StateFlow<BleHeartRateState> = heartRateManager.state
     val heartRateDevices: StateFlow<List<BleHeartRateDevice>> = heartRateManager.devices
+    private val _healthConnectState = MutableStateFlow(
+        HealthConnectUiState(availability = healthConnectManager.availability())
+    )
+    val healthConnectState: StateFlow<HealthConnectUiState> = _healthConnectState.asStateFlow()
+    val healthConnectPermissions: Set<String> = HealthConnectManager.REQUIRED_PERMISSIONS
     private var ticker: Job? = null
 
     init {
@@ -133,6 +150,7 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
                 _stats.value = buildStats(completed, relations)
             }
         }
+        refreshHealthConnect()
     }
 
     fun chooseWorkoutType(type: WorkoutType) { _workoutType.value = type }
@@ -234,6 +252,83 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
     fun connectHeartRateDevice(address: String) = heartRateManager.connect(address)
     fun connectSavedHeartRateDevice() { settings.value.heartRateDeviceAddress?.let(heartRateManager::connectSaved) }
     fun disconnectHeartRateDevice() = heartRateManager.disconnect()
+
+    fun refreshHealthConnect() {
+        viewModelScope.launch {
+            val availability = healthConnectManager.availability()
+            val granted = if (availability == HealthConnectAvailability.AVAILABLE) {
+                try {
+                    healthConnectManager.hasAllPermissions()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    false
+                }
+            } else {
+                false
+            }
+            _healthConnectState.value = _healthConnectState.value.copy(
+                availability = availability,
+                permissionsGranted = granted,
+                inProgress = false,
+                message = null,
+            )
+        }
+    }
+
+    fun onHealthConnectPermissionsResult(granted: Set<String>) {
+        val allGranted = healthConnectPermissions.all(granted::contains)
+        _healthConnectState.value = _healthConnectState.value.copy(
+            permissionsGranted = allGranted,
+            message = if (allGranted) "Health Connect подключён" else "Разрешения Health Connect не выданы полностью",
+        )
+    }
+
+    fun healthConnectSettingsIntent(): Intent = healthConnectManager.settingsOrInstallIntent()
+
+    fun exportSelectedWorkoutToHealthConnect() {
+        viewModelScope.launch {
+            actionMutex.withLock {
+                val selectedId = _selectedWorkoutId.value
+                if (selectedId == null) {
+                    _healthConnectState.value = _healthConnectState.value.copy(
+                        inProgress = false,
+                        message = "Сначала откройте сохранённую тренировку",
+                    )
+                    return@withLock
+                }
+                val workout = dao.getWorkout(selectedId)
+                if (workout == null) {
+                    _healthConnectState.value = _healthConnectState.value.copy(
+                        inProgress = false,
+                        message = "Тренировка не найдена",
+                    )
+                    return@withLock
+                }
+
+                _healthConnectState.value = _healthConnectState.value.copy(
+                    inProgress = true,
+                    message = null,
+                )
+                try {
+                    val result = healthConnectManager.exportWorkout(workout)
+                    _healthConnectState.value = _healthConnectState.value.copy(
+                        permissionsGranted = true,
+                        inProgress = false,
+                        message = "Тренировка записана в Health Connect",
+                        lastExportedWorkoutId = result.workoutId,
+                    )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    _healthConnectState.value = _healthConnectState.value.copy(
+                        inProgress = false,
+                        message = error.message ?: "Не удалось записать тренировку в Health Connect",
+                    )
+                }
+            }
+        }
+    }
 
     fun clearOperationError() { if (_operation.value is UiOperationState.Error) _operation.value = UiOperationState.Idle }
 

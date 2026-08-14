@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE" />
+    <uses-permission android:name="android.permission.health.WRITE_DISTANCE" />
+    <uses-permission android:name="android.permission.health.WRITE_TOTAL_CALORIES_BURNED" />
 
     <application
         android:name=".CrashCatcherApplication"
@@ -39,6 +42,26 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <activity
+            android:name=".health.HealthConnectRationaleActivity"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+
+        <activity-alias
+            android:name=".ViewHealthConnectPermissionUsageActivity"
+            android:exported="true"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            android:targetActivity=".health.HealthConnectRationaleActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+
         <service
             android:name=".tracking.WorkoutTrackingService"
             android:exported="false"
@@ -64,5 +87,9 @@
             </intent-filter>
         </activity>
     </application>
+
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
 
 </manifest>
