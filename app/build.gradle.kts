@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -14,7 +16,7 @@ plugins {
  *
  * API credentials must never be committed to the repository.
  */
-val runTrackSecrets = java.util.Properties().apply {
+val runTrackSecrets = Properties().apply {
     val defaultsFile = rootProject.file("secrets.defaults.properties")
     if (defaultsFile.isFile) {
         defaultsFile.inputStream().use { load(it) }
