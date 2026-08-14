@@ -87,7 +87,13 @@ class WorkoutTrackingService : Service() {
                     break
                 }
                 val locationEnabled = runCatching {
-                    getSystemService(LocationManager::class.java).isLocationEnabled
+                    val manager = getSystemService(LocationManager::class.java)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        manager.isLocationEnabled
+                    } else {
+                        manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                            manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                    }
                 }.getOrDefault(false)
                 repository.reportGpsAvailability(locationEnabled)
                 runCatching { repository.checkpoint(nowWall, nowElapsed) }
