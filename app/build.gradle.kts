@@ -12,8 +12,8 @@ android {
         applicationId = "com.runtrack.prototype"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.4.0-native-history"
+        versionCode = 5
+        versionName = "0.5.0-native-all-screens"
     }
 
     buildTypes {
