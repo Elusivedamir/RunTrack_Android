@@ -6,6 +6,7 @@ import androidx.room.withTransaction
 import com.runtrack.app.data.RoutePointEntity
 import com.runtrack.app.data.RunTrackDatabase
 import com.runtrack.app.data.WorkoutEntity
+import com.runtrack.app.data.WeatherSnapshotEntity
 import com.runtrack.app.domain.MapLayer
 import com.runtrack.app.domain.PortableBackupCrypto
 import com.runtrack.app.domain.GoalKind
@@ -49,7 +50,14 @@ class PortableBackupManager(
                                 relation.route.sortedBy { it.elapsedRealtimeMillis }.forEach { put(it.toJson()) }
                             })
                             put("heartRate", JSONArray().apply {
-                                relation.heartRateSamples.sortedBy { it.elapsedRealtimeMillis }.forEach { put(it.toJson()) }
+                                relation.heartRateSamples
+                                    .sortedBy { it.elapsedRealtimeMillis }
+                                    .forEach { put(it.toJson()) }
+                            })
+                            put("weather", JSONArray().apply {
+                                relation.weatherSnapshots
+                                    .sortedBy { it.capturedAt }
+                                    .forEach { put(it.toJson()) }
                             })
                         })
                     }
@@ -98,7 +106,12 @@ class PortableBackupManager(
         val version = root.optInt("version", -1)
         check(version in 1..BACKUP_VERSION) { "Версия резервной копии не поддерживается: $version" }
 
-        data class RestoredWorkout(val workout: WorkoutEntity, val route: List<RoutePointEntity>, val heartRate: List<com.runtrack.app.data.HeartRateSampleEntity>)
+        data class RestoredWorkout(
+            val workout: WorkoutEntity,
+            val route: List<RoutePointEntity>,
+            val heartRate: List<com.runtrack.app.data.HeartRateSampleEntity>,
+            val weather: List<WeatherSnapshotEntity>,
+        )
         val parsed = mutableListOf<RestoredWorkout>()
         val array = root.optJSONArray("workouts") ?: JSONArray()
         for (i in 0 until array.length()) {
@@ -108,8 +121,25 @@ class PortableBackupManager(
             val routeArray = entry.optJSONArray("route") ?: JSONArray()
             val route = (0 until routeArray.length()).map { idx -> routeArray.getJSONObject(idx).toRoutePoint(workout.id) }
             val heartArray = entry.optJSONArray("heartRate") ?: JSONArray()
-            val heartRate = (0 until heartArray.length()).map { idx -> heartArray.getJSONObject(idx).toHeartRateSample(workout.id) }
-            parsed += RestoredWorkout(workout, route, heartRate)
+            val heartRate = (0 until heartArray.length()).map { idx ->
+                heartArray.getJSONObject(idx).toHeartRateSample(workout.id)
+            }
+
+            /*
+             * Backup versions 1-2 did not contain weather.
+             * Missing weather therefore restores as an empty list.
+             */
+            val weatherArray = entry.optJSONArray("weather") ?: JSONArray()
+            val weather = (0 until weatherArray.length()).map { idx ->
+                weatherArray.getJSONObject(idx).toWeatherSnapshot(workout.id)
+            }
+
+            parsed += RestoredWorkout(
+                workout = workout,
+                route = route,
+                heartRate = heartRate,
+                weather = weather,
+            )
         }
 
         val ids = parsed.map { it.workout.id }
@@ -127,7 +157,19 @@ class PortableBackupManager(
                 dao.insertWorkout(entry.workout)
                 entry.route.forEach { dao.insertRoutePoint(it.copy(rowId = 0)) }
                 entry.heartRate.forEach {
-                    check(dao.insertHeartRateSample(it.copy(rowId = 0)) > 0L) { "Не удалось восстановить sample пульса" }
+                    check(
+                        dao.insertHeartRateSample(it.copy(rowId = 0)) > 0L
+                    ) {
+                        "Не удалось восстановить sample пульса"
+                    }
+                }
+
+                entry.weather.forEach {
+                    check(
+                        dao.insertWeatherSnapshot(it.copy(rowId = 0)) > 0L
+                    ) {
+                        "Не удалось восстановить weather snapshot"
+                    }
                 }
             }
         }
@@ -272,12 +314,120 @@ class PortableBackupManager(
         source = optString("source", "BLE_HRS").take(64),
     )
 
+    private fun WeatherSnapshotEntity.toJson() = JSONObject().apply {
+        put("capturedAt", capturedAt)
+        put("latitude", latitude)
+        put("longitude", longitude)
+
+        temperatureC?.let { put("temperatureC", it) }
+        apparentTemperatureC?.let {
+            put("apparentTemperatureC", it)
+        }
+        relativeHumidityPercent?.let {
+            put("relativeHumidityPercent", it)
+        }
+        windSpeedMps?.let { put("windSpeedMps", it) }
+        precipitationMm?.let { put("precipitationMm", it) }
+        weatherCode?.let { put("weatherCode", it) }
+
+        put("source", source)
+        put("fetchedAt", fetchedAt)
+    }
+
+    private fun JSONObject.toWeatherSnapshot(
+        workoutId: String,
+    ): WeatherSnapshotEntity {
+        val capturedAt = getLong("capturedAt").also {
+            require(it >= 0L) {
+                "Некорректное время weather snapshot"
+            }
+        }
+
+        val latitude = getDouble("latitude").also {
+            require(it.isFinite() && it in -90.0..90.0) {
+                "Некорректная latitude погоды"
+            }
+        }
+
+        val longitude = getDouble("longitude").also {
+            require(it.isFinite() && it in -180.0..180.0) {
+                "Некорректная longitude погоды"
+            }
+        }
+
+        val humidity =
+            if (has("relativeHumidityPercent") &&
+                !isNull("relativeHumidityPercent")
+            ) {
+                getInt("relativeHumidityPercent").also {
+                    require(it in 0..100) {
+                        "Некорректная влажность"
+                    }
+                }
+            } else {
+                null
+            }
+
+        val wind = nullableFiniteDouble("windSpeedMps")
+            ?.also {
+                require(it >= 0.0) {
+                    "Некорректная скорость ветра"
+                }
+            }
+
+        val precipitation =
+            nullableFiniteDouble("precipitationMm")
+                ?.also {
+                    require(it >= 0.0) {
+                        "Некорректные осадки"
+                    }
+                }
+
+        val source = getString("source")
+            .trim()
+            .also {
+                require(it.isNotBlank() && it.length <= 64) {
+                    "Некорректный weather source"
+                }
+            }
+
+        val fetchedAt = getLong("fetchedAt").also {
+            require(it >= 0L) {
+                "Некорректное время получения погоды"
+            }
+        }
+
+        return WeatherSnapshotEntity(
+            workoutId = workoutId,
+            capturedAt = capturedAt,
+            latitude = latitude,
+            longitude = longitude,
+            temperatureC =
+                nullableFiniteDouble("temperatureC"),
+            apparentTemperatureC =
+                nullableFiniteDouble("apparentTemperatureC"),
+            relativeHumidityPercent = humidity,
+            windSpeedMps = wind,
+            precipitationMm = precipitation,
+            weatherCode =
+                if (has("weatherCode") &&
+                    !isNull("weatherCode")
+                ) {
+                    getInt("weatherCode")
+                } else {
+                    null
+                },
+            source = source,
+            fetchedAt = fetchedAt,
+        )
+    }
+
     private fun JSONObject.nullableFiniteDouble(key: String): Double? =
         if (!has(key) || isNull(key)) null else optDouble(key).takeIf(Double::isFinite)
 
     companion object {
         private const val BACKUP_FORMAT = "RunTrackPortableBackup"
-        private const val BACKUP_VERSION = 2
+        private const val BACKUP_VERSION = 3
         private const val MAX_BACKUP_BYTES = 256L * 1024L * 1024L
     }
 }
