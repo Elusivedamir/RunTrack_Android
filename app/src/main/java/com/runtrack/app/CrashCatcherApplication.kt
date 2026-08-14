@@ -68,7 +68,7 @@ class CrashCatcherApplication : Application() {
             }
             .build()
 
-        HttpRequestUtil().setOkHttpClient(client)
+        HttpRequestUtil.setOkHttpClient(client)
     }
 
     companion object {
