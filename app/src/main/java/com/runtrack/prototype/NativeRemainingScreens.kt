@@ -1036,7 +1036,7 @@ private fun CalendarScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -> Un
 
 @Composable
 private fun CalendarGrid(month: YearMonth, activeDays: Set<Int>, selectedDay: Int?, onSelect: (Int) -> Unit) {
-    val locale = Locale.getDefault()
+    val locale = androidx.compose.ui.platform.LocalConfiguration.current.locales[0]
     val firstDay = WeekFields.of(locale).firstDayOfWeek
     val firstOffset = (month.atDay(1).dayOfWeek.value - firstDay.value + 7) % 7
     val padded = List<Int?>(firstOffset) { null } + (1..month.lengthOfMonth()).toList()
