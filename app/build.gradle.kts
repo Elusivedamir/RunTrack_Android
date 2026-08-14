@@ -12,8 +12,8 @@ android {
         applicationId = "com.runtrack.prototype"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0-diagnostic"
+        versionCode = 3
+        versionName = "0.3.0-native-screen1"
     }
 
     buildTypes {
@@ -55,6 +55,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
