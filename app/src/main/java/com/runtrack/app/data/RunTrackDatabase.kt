@@ -2,6 +2,8 @@ package com.runtrack.app.data
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(
@@ -96,12 +98,59 @@ data class HeartRateSampleEntity(
     val source: String,
 )
 
+@Entity(
+    tableName = "weather_snapshots",
+    foreignKeys = [
+        ForeignKey(
+            entity = WorkoutEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["workoutId"],
+            onDelete = ForeignKey.CASCADE,
+        )
+    ],
+    indices = [
+        Index(
+            value = ["workoutId", "capturedAt"],
+            unique = true,
+        ),
+    ],
+)
+data class WeatherSnapshotEntity(
+    @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
+    val workoutId: String,
+
+    // Time for which this weather snapshot applies.
+    val capturedAt: Long,
+
+    // Coordinates used for the weather request.
+    val latitude: Double,
+    val longitude: Double,
+
+    // Normalized internal units.
+    val temperatureC: Double?,
+    val apparentTemperatureC: Double?,
+    val relativeHumidityPercent: Int?,
+    val windSpeedMps: Double?,
+    val precipitationMm: Double?,
+
+    // Provider weather/WMO code. Interpretation remains outside Room.
+    val weatherCode: Int?,
+
+    // Provider identifier, e.g. OPEN_METEO.
+    val source: String,
+
+    // Wall-clock time when the provider response was received.
+    val fetchedAt: Long,
+)
+
 data class WorkoutWithRoute(
     @Embedded val workout: WorkoutEntity,
     @Relation(parentColumn = "id", entityColumn = "workoutId")
     val route: List<RoutePointEntity>,
     @Relation(parentColumn = "id", entityColumn = "workoutId")
     val heartRateSamples: List<HeartRateSampleEntity>,
+    @Relation(parentColumn = "id", entityColumn = "workoutId")
+    val weatherSnapshots: List<WeatherSnapshotEntity> = emptyList(),
 )
 
 data class WorkoutAggregateRow(
@@ -125,6 +174,15 @@ interface WorkoutDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertHeartRateSample(sample: HeartRateSampleEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertWeatherSnapshot(snapshot: WeatherSnapshotEntity): Long
+
+    @Query("SELECT * FROM weather_snapshots WHERE workoutId = :workoutId ORDER BY capturedAt")
+    suspend fun getWeatherSnapshots(workoutId: String): List<WeatherSnapshotEntity>
+
+    @Query("SELECT * FROM weather_snapshots WHERE workoutId = :workoutId ORDER BY capturedAt DESC LIMIT 1")
+    suspend fun getLatestWeatherSnapshot(workoutId: String): WeatherSnapshotEntity?
 
     @Query("SELECT * FROM heart_rate_samples WHERE workoutId = :workoutId ORDER BY elapsedRealtimeMillis")
     suspend fun getHeartRateSamples(workoutId: String): List<HeartRateSampleEntity>
@@ -186,14 +244,55 @@ interface WorkoutDao {
 }
 
 @Database(
-    entities = [WorkoutEntity::class, RoutePointEntity::class, HeartRateSampleEntity::class],
-    version = 1,
+    entities = [
+        WorkoutEntity::class,
+        RoutePointEntity::class,
+        HeartRateSampleEntity::class,
+        WeatherSnapshotEntity::class,
+    ],
+    version = 2,
     exportSchema = true,
 )
 abstract class RunTrackDatabase : RoomDatabase() {
     abstract fun workoutDao(): WorkoutDao
 
     companion object {
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `weather_snapshots` (
+                        `rowId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `workoutId` TEXT NOT NULL,
+                        `capturedAt` INTEGER NOT NULL,
+                        `latitude` REAL NOT NULL,
+                        `longitude` REAL NOT NULL,
+                        `temperatureC` REAL,
+                        `apparentTemperatureC` REAL,
+                        `relativeHumidityPercent` INTEGER,
+                        `windSpeedMps` REAL,
+                        `precipitationMm` REAL,
+                        `weatherCode` INTEGER,
+                        `source` TEXT NOT NULL,
+                        `fetchedAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`workoutId`)
+                            REFERENCES `workouts`(`id`)
+                            ON UPDATE NO ACTION
+                            ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS
+                    `index_weather_snapshots_workoutId_capturedAt`
+                    ON `weather_snapshots` (`workoutId`, `capturedAt`)
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile private var INSTANCE: RunTrackDatabase? = null
 
         fun get(context: Context): RunTrackDatabase = INSTANCE ?: synchronized(this) {
@@ -201,7 +300,10 @@ abstract class RunTrackDatabase : RoomDatabase() {
                 context.applicationContext,
                 RunTrackDatabase::class.java,
                 "runtrack.db",
-            ).build().also { INSTANCE = it }
+            )
+                .addMigrations(MIGRATION_1_2)
+                .build()
+                .also { INSTANCE = it }
         }
     }
 }
