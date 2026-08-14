@@ -5,6 +5,8 @@ import com.runtrack.app.data.RunTrackDatabase
 import com.runtrack.app.settings.SettingsRepository
 import com.runtrack.app.export.PortableBackupManager
 import com.runtrack.app.export.WorkoutExportManager
+import com.runtrack.app.weather.WeatherRepository
+import com.runtrack.app.weather.WeatherUpdateCoordinator
 
 object RunTrackRuntime {
     @Volatile private var initialized = false
@@ -22,6 +24,10 @@ object RunTrackRuntime {
         private set
     lateinit var resultNotificationManager: ResultNotificationManager
         private set
+    lateinit var weatherRepository: WeatherRepository
+        private set
+    lateinit var weatherUpdateCoordinator: WeatherUpdateCoordinator
+        private set
 
     @Synchronized
     fun initialize(context: Context) {
@@ -30,6 +36,8 @@ object RunTrackRuntime {
         database = RunTrackDatabase.get(app)
         trackingRepository = TrackingRepository(database)
         settingsRepository = SettingsRepository(app)
+        weatherRepository = WeatherRepository(database.workoutDao())
+        weatherUpdateCoordinator = WeatherUpdateCoordinator(weatherRepository)
         backupManager = PortableBackupManager(app, database, settingsRepository)
         exportManager = WorkoutExportManager(app)
         heartRateManager = BleHeartRateManager(app, settingsRepository) { bpm, wall, elapsed ->

@@ -2,6 +2,7 @@ package com.runtrack.app.weather
 
 import com.runtrack.app.data.WeatherSnapshotEntity
 import com.runtrack.app.data.WorkoutDao
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -83,6 +84,8 @@ class WeatherRepository(
                     snapshot.copy(rowId = insertedRowId)
                 )
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Exception) {
             WeatherFetchResult.Failed(
                 reason = error.message

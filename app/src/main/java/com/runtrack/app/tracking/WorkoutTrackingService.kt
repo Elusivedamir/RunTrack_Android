@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
 import com.runtrack.app.R
 import com.runtrack.app.domain.LocationSample
+import com.runtrack.app.weather.WeatherUpdateCoordinator
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 
@@ -20,6 +21,7 @@ class WorkoutTrackingService : Service() {
     private val scope = CoroutineScope(serviceJob + Dispatchers.IO)
     private lateinit var fused: FusedLocationProviderClient
     private lateinit var repository: TrackingRepository
+    private lateinit var weatherUpdateCoordinator: WeatherUpdateCoordinator
     @Volatile private var autoPauseEnabled: Boolean = true
     @Volatile private var updatesRequested = false
     @Volatile private var foregroundStarted = false
@@ -31,11 +33,33 @@ class WorkoutTrackingService : Service() {
             val ordered = result.locations.sortedBy { it.elapsedRealtimeNanos }
             scope.launch {
                 for (location in ordered) {
-                    repository.onLocation(
-                        sample = location.toSample(),
+                    val sample = location.toSample()
+
+                    val accepted = repository.onLocation(
+                        sample = sample,
                         elapsedRealtimeMillis = location.elapsedRealtimeNanos / 1_000_000L,
                         autoPauseEnabled = autoPauseEnabled,
                     )
+
+                    /*
+                     * Weather is optional side work.
+                     *
+                     * Launch it separately so an HTTP timeout can never
+                     * stall GPS ingestion or Room route persistence.
+                     */
+                    if (accepted) {
+                        val workoutId =
+                            repository.state.value?.workoutId
+
+                        if (workoutId != null) {
+                            scope.launch {
+                                weatherUpdateCoordinator.onAcceptedLocation(
+                                    workoutId = workoutId,
+                                    sample = sample,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -50,6 +74,7 @@ class WorkoutTrackingService : Service() {
         fused = LocationServices.getFusedLocationProviderClient(this)
         RunTrackRuntime.initialize(this)
         repository = RunTrackRuntime.trackingRepository
+        weatherUpdateCoordinator = RunTrackRuntime.weatherUpdateCoordinator
         createNotificationChannel()
         scope.launch {
             RunTrackRuntime.settingsRepository.settings.collectLatest { settings ->
