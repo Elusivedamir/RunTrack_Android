@@ -55,7 +55,7 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         require(goal.isValid()) { "invalid workout goal" }
         check(activeWorkoutId == null) { "workout already active" }
         val existing = dao.getRecoverableWorkout()
-        check(existing == null) { "recoverable workout exists: ${existing.id}" }
+        check(existing == null) { "recoverable workout exists: ${existing?.id}" }
 
         val id = UUID.randomUUID().toString()
         val token = UUID.randomUUID().toString()

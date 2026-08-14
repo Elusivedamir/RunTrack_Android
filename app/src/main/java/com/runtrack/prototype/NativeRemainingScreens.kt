@@ -47,6 +47,7 @@ import com.runtrack.prototype.data.WorkoutEntity
 import com.runtrack.prototype.data.WorkoutWithRoute
 import com.runtrack.prototype.domain.*
 import com.runtrack.prototype.export.*
+import com.runtrack.prototype.tracking.BleHeartRateState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
