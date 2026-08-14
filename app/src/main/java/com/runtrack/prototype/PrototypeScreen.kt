@@ -14,7 +14,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -34,7 +33,7 @@ private val PrototypeGreen = Color(0xFF63D331)
 @Composable
 fun RunTrackPrototypeApp() {
     MaterialTheme {
-        var currentIndex by rememberSaveable { mutableIntStateOf(0) }
+        var currentIndex by remember { mutableIntStateOf(0) }
         var showScreenPicker by remember { mutableStateOf(false) }
 
         val screen = prototypeScreens[currentIndex]
