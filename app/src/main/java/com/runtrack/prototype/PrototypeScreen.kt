@@ -34,61 +34,75 @@ fun RunTrackPrototypeApp() {
         var currentIndex by remember { mutableIntStateOf(0) }
         var showScreenPicker by remember { mutableStateOf(false) }
 
-        if (currentIndex == 0) {
-            NativeMainScreen(
-                onQuickStart = { currentIndex = 1 },
-                onHistory = { currentIndex = 9 },
-                onStats = { currentIndex = 10 },
-                onProfile = { currentIndex = 14 },
-                onSettings = { currentIndex = 17 },
-            )
-        } else {
-            val screen = prototypeScreens[currentIndex]
+        when (currentIndex) {
+            0 -> {
+                NativeMainScreen(
+                    onQuickStart = { currentIndex = 1 },
+                    onHistory = { currentIndex = 9 },
+                    onStats = { currentIndex = 10 },
+                    onProfile = { currentIndex = 14 },
+                    onSettings = { currentIndex = 17 },
+                )
+            }
 
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(PrototypeBackground)
-            ) {
-                val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-                val heightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+            9 -> {
+                NativeHistoryScreen(
+                    onHome = { currentIndex = 0 },
+                    onStats = { currentIndex = 10 },
+                    onProfile = { currentIndex = 14 },
+                )
+            }
 
-                Image(
-                    painter = painterResource(screen.drawableRes),
-                    contentDescription = screen.title,
-                    contentScale = ContentScale.FillBounds,
+            else -> {
+                val screen = prototypeScreens[currentIndex]
+
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(currentIndex) {
-                            var totalDrag = 0f
-                            detectHorizontalDragGestures(
-                                onHorizontalDrag = { _, dragAmount ->
-                                    totalDrag += dragAmount
-                                },
-                                onDragEnd = {
-                                    if (abs(totalDrag) > widthPx * 0.16f) {
-                                        currentIndex = if (totalDrag < 0f) {
-                                            (currentIndex + 1).coerceAtMost(prototypeScreens.lastIndex)
-                                        } else {
-                                            (currentIndex - 1).coerceAtLeast(0)
+                        .background(PrototypeBackground)
+                ) {
+                    val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                    val heightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+
+                    Image(
+                        painter = painterResource(screen.drawableRes),
+                        contentDescription = screen.title,
+                        contentScale = ContentScale.FillBounds,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(currentIndex) {
+                                var totalDrag = 0f
+                                detectHorizontalDragGestures(
+                                    onHorizontalDrag = { _, dragAmount ->
+                                        totalDrag += dragAmount
+                                    },
+                                    onDragEnd = {
+                                        if (abs(totalDrag) > widthPx * 0.16f) {
+                                            currentIndex = if (totalDrag < 0f) {
+                                                (currentIndex + 1)
+                                                    .coerceAtMost(prototypeScreens.lastIndex)
+                                            } else {
+                                                (currentIndex - 1).coerceAtLeast(0)
+                                            }
                                         }
+                                        totalDrag = 0f
+                                    },
+                                    onDragCancel = { totalDrag = 0f }
+                                )
+                            }
+                            .pointerInput(currentIndex) {
+                                detectTapGestures(
+                                    onLongPress = { showScreenPicker = true },
+                                    onTap = { offset ->
+                                        val nx = (offset.x / widthPx).coerceIn(0f, 1f)
+                                        val ny = (offset.y / heightPx).coerceIn(0f, 1f)
+                                        routeTap(currentIndex, nx, ny)
+                                            ?.let { currentIndex = it }
                                     }
-                                    totalDrag = 0f
-                                },
-                                onDragCancel = { totalDrag = 0f }
-                            )
-                        }
-                        .pointerInput(currentIndex) {
-                            detectTapGestures(
-                                onLongPress = { showScreenPicker = true },
-                                onTap = { offset ->
-                                    val nx = (offset.x / widthPx).coerceIn(0f, 1f)
-                                    val ny = (offset.y / heightPx).coerceIn(0f, 1f)
-                                    routeTap(currentIndex, nx, ny)?.let { currentIndex = it }
-                                }
-                            )
-                        }
-                )
+                                )
+                            }
+                    )
+                }
             }
         }
 
@@ -181,8 +195,16 @@ private fun ScreenPickerDialog(
                         Button(
                             onClick = { onSelect(index) },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (index == currentIndex) PrototypeGreen else Color(0xFF172732),
-                                contentColor = if (index == currentIndex) Color.Black else Color.White
+                                containerColor = if (index == currentIndex) {
+                                    PrototypeGreen
+                                } else {
+                                    Color(0xFF172732)
+                                },
+                                contentColor = if (index == currentIndex) {
+                                    Color.Black
+                                } else {
+                                    Color.White
+                                }
                             ),
                             modifier = Modifier.fillMaxWidth()
                         ) {
