@@ -3,14 +3,15 @@ package com.runtrack.prototype
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -18,9 +19,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.runtrack.prototype.data.WorkoutWithRoute
+import com.runtrack.prototype.domain.*
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 private val Bg = Color(0xFF07131B)
 private val Card = Color(0xFF101C25)
@@ -30,416 +39,217 @@ private val Muted = Color(0xFF8E9AA3)
 private val Yellow = Color(0xFFF4B400)
 private val Blue = Color(0xFF42A5F5)
 
+private enum class HomeTypeFilter { ALL, RUN, WALK, BIKE }
+
 @Composable
 fun NativeMainScreen(
-    onQuickStart: () -> Unit,
+    viewModel: RunTrackViewModel,
+    onQuickStart: (WorkoutType) -> Unit,
     onHistory: () -> Unit,
-    onStats: () -> Unit,
-    onProfile: () -> Unit,
+    onStats: (() -> Unit)?,
+    onProfile: (() -> Unit)?,
     onSettings: () -> Unit,
+    onOpenWorkout: (String) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Bg)
-    ) {
-        Header(onSettings)
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val allRoutes by viewModel.allRoutes.collectAsStateWithLifecycle()
+    var showFilters by remember { mutableStateOf(false) }
+    var showQuickStart by rememberSaveable { mutableStateOf(true) }
+    var typeFilter by remember { mutableStateOf(HomeTypeFilter.ALL) }
+    var periodDays by remember { mutableIntStateOf(30) }
 
+    val cutoff = remember(periodDays) { System.currentTimeMillis() - periodDays * 86_400_000L }
+    val visible = remember(allRoutes, typeFilter, cutoff) {
+        allRoutes.filter { relation ->
+            relation.workout.startedAt >= cutoff && when (typeFilter) {
+                HomeTypeFilter.ALL -> true
+                HomeTypeFilter.RUN -> relation.workout.type == WorkoutType.RUN.name
+                HomeTypeFilter.WALK -> relation.workout.type == WorkoutType.WALK.name
+                HomeTypeFilter.BIKE -> relation.workout.type == WorkoutType.BIKE.name
+            }
+        }
+    }
+    val latest = visible.maxByOrNull { it.workout.startedAt }
+
+    Column(Modifier.fillMaxSize().background(Bg)) {
+        Header(onFilters = { showFilters = true }, onSettings = onSettings)
         RouteMap(
-            modifier = Modifier
-                .padding(horizontal = 12.dp)
-                .fillMaxWidth()
-                .height(205.dp)
+            relation = latest,
+            layer = settings.mapLayer,
+            onLayer = { viewModel.setMapLayer(if (settings.mapLayer == MapLayer.STANDARD) MapLayer.TERRAIN else MapLayer.STANDARD) },
+            modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().height(205.dp),
         )
-
         Spacer(Modifier.height(12.dp))
-
-        QuickStart(
-            onQuickStart = onQuickStart,
-            modifier = Modifier.padding(horizontal = 12.dp)
-        )
-
-        Spacer(Modifier.height(12.dp))
-
-        RecentWorkout(
-            onHistory = onHistory,
-            modifier = Modifier.padding(horizontal = 12.dp)
-        )
-
+        if (showQuickStart) {
+            QuickStart(onQuickStart = onQuickStart, onDismiss = { showQuickStart = false }, modifier = Modifier.padding(horizontal = 12.dp))
+            Spacer(Modifier.height(12.dp))
+        }
+        RecentWorkout(latest, settings.units, onHistory, onOpenWorkout, Modifier.padding(horizontal = 12.dp))
         Spacer(Modifier.weight(1f))
+        BottomBar(0, null, onHistory, onStats, onProfile)
+    }
 
-        BottomBar(
-            selected = 0,
-            onHome = {},
-            onHistory = onHistory,
-            onStats = onStats,
-            onProfile = onProfile,
+    if (showFilters) {
+        AlertDialog(
+            onDismissRequest = { showFilters = false },
+            confirmButton = { TextButton(onClick = { showFilters = false }) { Text("Готово") } },
+            title = { Text("Фильтры") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Тип активности")
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(HomeTypeFilter.ALL to "Все", HomeTypeFilter.RUN to "Бег", HomeTypeFilter.WALK to "Ходьба", HomeTypeFilter.BIKE to "Вело").forEach { (filter, label) ->
+                            FilterChip(selected = typeFilter == filter, onClick = { typeFilter = filter }, label = { Text(label) })
+                        }
+                    }
+                    Text("Период")
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(7 to "7 дней", 30 to "30 дней", 365 to "Год").forEach { (days, label) ->
+                            FilterChip(selected = periodDays == days, onClick = { periodDays = days }, label = { Text(label) })
+                        }
+                    }
+                }
+            },
         )
     }
 }
 
 @Composable
-private fun Header(onSettings: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 10.dp, top = 12.dp, bottom = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                "Доброе утро!",
-                color = Color.White,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                "Готов к новой тренировке?",
-                color = Muted,
-                fontSize = 12.sp
-            )
+private fun Header(onFilters: () -> Unit, onSettings: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 10.dp, top = 12.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Доброе утро!", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text("Готов к новой тренировке?", color = Muted, fontSize = 12.sp)
         }
-
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .clickable { },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Outlined.Tune,
-                contentDescription = "Фильтры",
-                tint = Color(0xFFB8C2C9),
-                modifier = Modifier.size(20.dp)
-            )
+        Box(Modifier.size(38.dp).clickable(onClick = onFilters), contentAlignment = Alignment.Center) {
+            Icon(Icons.Outlined.Tune, "Фильтры", tint = Color(0xFFB8C2C9), modifier = Modifier.size(20.dp))
         }
-
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .clickable(onClick = onSettings),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Outlined.Settings,
-                contentDescription = "Настройки",
-                tint = Color(0xFFB8C2C9),
-                modifier = Modifier.size(20.dp)
-            )
+        Box(Modifier.size(38.dp).clickable(onClick = onSettings), contentAlignment = Alignment.Center) {
+            Icon(Icons.Outlined.Settings, "Настройки", tint = Color(0xFFB8C2C9), modifier = Modifier.size(20.dp))
         }
     }
 }
 
 @Composable
-private fun RouteMap(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .background(Color(0xFF0C1821), RoundedCornerShape(16.dp))
-    ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-            val road = Color(0xFF20313C)
-            val minor = Color(0xFF172630)
-
+private fun RouteMap(relation: WorkoutWithRoute?, layer: MapLayer, onLayer: () -> Unit, modifier: Modifier = Modifier) {
+    val segments = remember(relation) {
+        relation?.route?.groupBy { it.segmentIndex }?.toSortedMap()?.values
+            ?.map { segment -> RouteGeometry.downsampleForRender(segment.sortedBy { it.movingElapsedMillis }.map { it.toSample() }) }
+            ?.filter { it.isNotEmpty() }.orEmpty()
+    }
+    var pan by remember(relation?.workout?.id) { mutableStateOf(Offset.Zero) }
+    Box(modifier.background(if (layer == MapLayer.STANDARD) Color(0xFF0C1821) else Color(0xFF0E1B16), RoundedCornerShape(16.dp))) {
+        Canvas(Modifier.fillMaxSize().pointerInput(segments) {
+            detectDragGestures { _, dragAmount -> pan = Offset(pan.x + dragAmount.x, pan.y + dragAmount.y) }
+        }) {
+            val w = size.width; val h = size.height
+            val road = if (layer == MapLayer.STANDARD) Color(0xFF20313C) else Color(0xFF244032)
+            val minor = if (layer == MapLayer.STANDARD) Color(0xFF172630) else Color(0xFF172D23)
             for (i in 0..8) {
                 val y = h * (0.10f + i * 0.11f)
-                drawLine(
-                    color = if (i % 2 == 0) road else minor,
-                    start = Offset(0f, y),
-                    end = Offset(w, y - h * 0.18f),
-                    strokeWidth = if (i % 2 == 0) 1.2.dp.toPx() else 0.7.dp.toPx()
-                )
+                drawLine(if (i % 2 == 0) road else minor, Offset(0f, y), Offset(w, y - h * 0.18f), if (i % 2 == 0) 1.2.dp.toPx() else 0.7.dp.toPx())
             }
-
-            for (i in 0..8) {
-                val x = w * (0.02f + i * 0.13f)
-                drawLine(
-                    color = minor,
-                    start = Offset(x, 0f),
-                    end = Offset(x + w * 0.15f, h),
-                    strokeWidth = 0.7.dp.toPx()
-                )
+            val normalizedSegments = RouteGeometry.normalizeRoutes(segments, w, h, 24.dp.toPx())
+                .map { segment -> segment.map { Offset(it.x + pan.x, it.y + pan.y) } }
+            normalizedSegments.forEach { normalized ->
+                if (normalized.size == 1) drawCircle(Green, 4.dp.toPx(), normalized.first())
+                else if (normalized.size >= 2) {
+                    val path = Path().apply { moveTo(normalized.first().x, normalized.first().y); normalized.drop(1).forEach { lineTo(it.x, it.y) } }
+                    drawPath(path, Green, style = Stroke(4.dp.toPx(), cap = StrokeCap.Round))
+                }
             }
-
-            drawLine(
-                color = road,
-                start = Offset(w * 0.02f, h * 0.74f),
-                end = Offset(w * 0.94f, h * 0.20f),
-                strokeWidth = 1.5.dp.toPx()
-            )
-            drawLine(
-                color = road,
-                start = Offset(w * 0.10f, h * 0.18f),
-                end = Offset(w * 0.84f, h * 0.92f),
-                strokeWidth = 1.3.dp.toPx()
-            )
-
-            val path = Path().apply {
-                moveTo(w * 0.66f, h * 0.88f)
-                cubicTo(
-                    w * 0.62f, h * 0.76f,
-                    w * 0.55f, h * 0.68f,
-                    w * 0.49f, h * 0.60f
-                )
-                cubicTo(
-                    w * 0.42f, h * 0.50f,
-                    w * 0.39f, h * 0.40f,
-                    w * 0.32f, h * 0.33f
-                )
-            }
-
-            drawPath(
-                path = path,
-                color = Green,
-                style = Stroke(
-                    width = 4.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-            )
-
-            fun marker(cx: Float, cy: Float) {
-                drawCircle(
-                    color = Color(0xFF07131B),
-                    radius = 10.dp.toPx(),
-                    center = Offset(w * cx, h * cy)
-                )
-                drawCircle(
-                    color = Green,
-                    radius = 8.dp.toPx(),
-                    center = Offset(w * cx, h * cy),
-                    style = Stroke(3.dp.toPx())
-                )
-                drawCircle(
-                    color = Green,
-                    radius = 2.6.dp.toPx(),
-                    center = Offset(w * cx, h * cy)
-                )
-            }
-
-            marker(0.32f, 0.33f)
-            marker(0.66f, 0.88f)
+            normalizedSegments.firstOrNull { it.isNotEmpty() }?.firstOrNull()?.let { drawCircle(Green, 5.dp.toPx(), it) }
+            normalizedSegments.lastOrNull { it.isNotEmpty() }?.lastOrNull()?.let { drawCircle(Green, 7.dp.toPx(), it, style = Stroke(2.dp.toPx())) }
         }
-
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            SmallMapButton(Icons.Outlined.MyLocation)
-            SmallMapButton(Icons.Outlined.Layers)
+        if (segments.isEmpty()) Text("Маршрутов пока нет", color = Muted, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center))
+        Row(Modifier.align(Alignment.TopEnd).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(0.dp)) {
+            SmallMapButton(Icons.Outlined.MyLocation, "Центрировать маршрут", enabled = segments.isNotEmpty()) { pan = Offset.Zero }
+            SmallMapButton(Icons.Outlined.Layers, "Слой карты", onClick = onLayer)
         }
     }
 }
 
 @Composable
-private fun SmallMapButton(icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    Box(
-        modifier = Modifier
-            .size(32.dp)
-            .background(Color(0xAA101D26), CircleShape),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = Color(0xFFAEB8BE),
-            modifier = Modifier.size(17.dp)
-        )
+private fun SmallMapButton(icon: ImageVector, description: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Box(Modifier.size(48.dp).clickable(enabled = enabled, onClick = onClick), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(32.dp).background(Color(0xAA101D26), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(icon, description, tint = if (enabled) Color(0xFFAEB8BE) else Muted.copy(alpha = 0.5f), modifier = Modifier.size(17.dp))
+        }
     }
 }
 
 @Composable
-private fun QuickStart(
-    onQuickStart: () -> Unit,
-    modifier: Modifier = Modifier
-) {
+private fun QuickStart(onQuickStart: (WorkoutType) -> Unit, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
     Column(modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    "Быстрый старт",
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 17.sp
-                )
-                Text(
-                    "Выбери тип тренировки",
-                    color = Muted,
-                    fontSize = 11.sp
-                )
+            Column(Modifier.weight(1f)) {
+                Text("Быстрый старт", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                Text("Выбери тип тренировки", color = Muted, fontSize = 11.sp)
             }
-
-            Icon(
-                Icons.Outlined.Close,
-                contentDescription = null,
-                tint = Muted,
-                modifier = Modifier.size(18.dp)
-            )
+            Box(Modifier.size(40.dp).clickable(onClick = onDismiss), contentAlignment = Alignment.Center) {
+                Icon(Icons.Outlined.Close, "Скрыть быстрый старт", tint = Muted, modifier = Modifier.size(18.dp))
+            }
         }
-
         Spacer(Modifier.height(10.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            ActivityCard(
-                title = "Бег",
-                icon = Icons.Outlined.DirectionsRun,
-                accent = Green,
-                onClick = onQuickStart,
-                modifier = Modifier.weight(1f)
-            )
-            ActivityCard(
-                title = "Ходьба",
-                icon = Icons.Outlined.DirectionsWalk,
-                accent = Yellow,
-                onClick = onQuickStart,
-                modifier = Modifier.weight(1f)
-            )
-            ActivityCard(
-                title = "Велосипед",
-                icon = Icons.Outlined.DirectionsBike,
-                accent = Blue,
-                onClick = onQuickStart,
-                modifier = Modifier.weight(1f)
-            )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ActivityCard("Бег", Icons.Outlined.DirectionsRun, Green, { onQuickStart(WorkoutType.RUN) }, Modifier.weight(1f))
+            ActivityCard("Ходьба", Icons.Outlined.DirectionsWalk, Yellow, { onQuickStart(WorkoutType.WALK) }, Modifier.weight(1f))
+            ActivityCard("Велосипед", Icons.Outlined.DirectionsBike, Blue, { onQuickStart(WorkoutType.BIKE) }, Modifier.weight(1f))
         }
     }
 }
 
 @Composable
-private fun ActivityCard(
-    title: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    accent: Color,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier
-            .height(92.dp)
-            .background(Card2, RoundedCornerShape(13.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .background(accent.copy(alpha = 0.18f), RoundedCornerShape(10.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = accent,
-                modifier = Modifier.size(25.dp)
-            )
+private fun ActivityCard(title: String, icon: ImageVector, accent: Color, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.height(92.dp).background(Card2, RoundedCornerShape(13.dp)).clickable(onClick = onClick).padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Box(Modifier.size(40.dp).background(accent.copy(alpha = 0.18f), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = accent, modifier = Modifier.size(25.dp))
         }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            title,
-            color = Color.White,
-            fontSize = 11.sp,
-            maxLines = 1
-        )
+        Spacer(Modifier.height(6.dp)); Text(title, color = Color.White, fontSize = 11.sp, maxLines = 1)
     }
 }
 
 @Composable
-private fun RecentWorkout(
-    onHistory: () -> Unit,
-    modifier: Modifier = Modifier
-) {
+private fun RecentWorkout(relation: WorkoutWithRoute?, units: UnitSystem, onHistory: () -> Unit, onOpenWorkout: (String) -> Unit, modifier: Modifier = Modifier) {
     Column(modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "Недавние тренировки",
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 15.sp,
-                modifier = Modifier.weight(1f)
-            )
-
-            Text(
-                "Смотреть все",
-                color = Muted,
-                fontSize = 11.sp,
-                modifier = Modifier.clickable(onClick = onHistory)
-            )
+            Text("Недавние тренировки", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, modifier = Modifier.weight(1f))
+            Text("Смотреть все", color = Muted, fontSize = 11.sp, modifier = Modifier.clickable(onClick = onHistory))
         }
-
         Spacer(Modifier.height(8.dp))
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Card, RoundedCornerShape(13.dp))
-                .clickable(onClick = onHistory)
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(38.dp)
-                    .background(Green.copy(alpha = 0.14f), RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Outlined.DirectionsRun,
-                    contentDescription = null,
-                    tint = Green,
-                    modifier = Modifier.size(22.dp)
-                )
+        if (relation == null) {
+            Box(Modifier.fillMaxWidth().heightIn(min = 72.dp).background(Card, RoundedCornerShape(13.dp)).padding(12.dp), contentAlignment = Alignment.CenterStart) {
+                Text("Завершённых тренировок пока нет", color = Muted, fontSize = 11.sp)
             }
-
-            Spacer(Modifier.width(10.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    "Утренняя пробежка",
-                    color = Color.White,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 13.sp
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "7,42 км  •  42:18  •  5:42 /км",
-                    color = Muted,
-                    fontSize = 10.sp
-                )
+        } else {
+            val workout = relation.workout
+            val type = runCatching { WorkoutType.valueOf(workout.type) }.getOrDefault(WorkoutType.RUN)
+            val accent = when (type) { WorkoutType.RUN -> Green; WorkoutType.WALK -> Yellow; WorkoutType.BIKE -> Blue }
+            val icon = when (type) { WorkoutType.RUN -> Icons.Outlined.DirectionsRun; WorkoutType.WALK -> Icons.Outlined.DirectionsWalk; WorkoutType.BIKE -> Icons.Outlined.DirectionsBike }
+            val metrics = WorkoutMath.metrics(workout.distanceMeters, workout.elapsedMillis, workout.movingMillis)
+            val performance = if (type == WorkoutType.BIKE) RunTrackFormatter.speed(workout.averageSpeedMps, units) else RunTrackFormatter.pace(metrics.paceSecondsPerKm, units)
+            Row(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(13.dp)).clickable { onOpenWorkout(workout.id) }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(38.dp).background(accent.copy(alpha = 0.14f), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+                    Icon(icon, null, tint = accent, modifier = Modifier.size(22.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(workout.title ?: typeLabel(type), color = Color.White, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                    Text("${RunTrackFormatter.distance(workout.distanceMeters, units)}  •  ${RunTrackFormatter.duration(workout.elapsedMillis)}  •  $performance", color = Muted, fontSize = 10.sp)
+                }
+                Text(Instant.ofEpochMilli(workout.startedAt).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("dd MMM yyyy")), color = Color(0xFF73818B), fontSize = 9.sp)
             }
-
-            Text(
-                "12 авг 2024",
-                color = Color(0xFF73818B),
-                fontSize = 9.sp
-            )
         }
     }
 }
 
+private fun typeLabel(type: WorkoutType) = when (type) { WorkoutType.RUN -> "Пробежка"; WorkoutType.WALK -> "Прогулка"; WorkoutType.BIKE -> "Велопоездка" }
+
+private fun com.runtrack.prototype.data.RoutePointEntity.toSample() = LocationSample(timestampMillis, latitude, longitude, accuracyMeters, altitudeMeters, speedMps, bearingDegrees, provider, elapsedRealtimeMillis)
+
 @Composable
-private fun BottomBar(
-    selected: Int,
-    onHome: () -> Unit,
-    onHistory: () -> Unit,
-    onStats: () -> Unit,
-    onProfile: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(70.dp)
-            .background(Color(0xFF0B151C))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceAround,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+private fun BottomBar(selected: Int, onHome: (() -> Unit)?, onHistory: (() -> Unit)?, onStats: (() -> Unit)?, onProfile: (() -> Unit)?) {
+    Row(Modifier.fillMaxWidth().height(70.dp).background(Color(0xFF0B151C)).padding(horizontal = 8.dp, vertical = 6.dp), horizontalArrangement = Arrangement.SpaceAround, verticalAlignment = Alignment.CenterVertically) {
         NavItem("Главная", Icons.Outlined.Home, selected == 0, onHome)
         NavItem("История", Icons.Outlined.History, selected == 1, onHistory)
         NavItem("Статистика", Icons.Outlined.BarChart, selected == 2, onStats)
@@ -448,31 +258,9 @@ private fun BottomBar(
 }
 
 @Composable
-private fun RowScope.NavItem(
-    title: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .weight(1f)
-            .fillMaxHeight()
-            .clickable(onClick = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            icon,
-            contentDescription = title,
-            tint = if (selected) Green else Muted,
-            modifier = Modifier.size(22.dp)
-        )
-        Spacer(Modifier.height(3.dp))
-        Text(
-            title,
-            color = if (selected) Green else Muted,
-            fontSize = 9.sp
-        )
+private fun RowScope.NavItem(title: String, icon: ImageVector, selected: Boolean, onClick: (() -> Unit)?) {
+    Column(Modifier.weight(1f).fillMaxHeight().then(if (!selected && onClick != null) Modifier.clickable(onClick = onClick) else Modifier), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(icon, title, tint = if (selected) Green else Muted, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.height(3.dp)); Text(title, color = if (selected) Green else Muted, fontSize = 9.sp)
     }
 }

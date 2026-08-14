@@ -7,11 +7,13 @@ import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.time.Instant
+import com.runtrack.prototype.tracking.RunTrackRuntime
 
 class CrashCatcherApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        RunTrackRuntime.initialize(this)
 
         val previous = Thread.getDefaultUncaughtExceptionHandler()
 

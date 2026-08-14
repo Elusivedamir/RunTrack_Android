@@ -1,4 +1,4 @@
-name: Build UI Prototype APK
+name: Build RunTrack Android
 
 on:
   workflow_dispatch:
@@ -36,12 +36,21 @@ jobs:
         with:
           gradle-version: "8.13"
 
+      - name: Unit tests
+        run: gradle --no-daemon :app:testDebugUnitTest
+
+      - name: Compile Android tests
+        run: gradle --no-daemon :app:compileDebugAndroidTestKotlin
+
+      - name: Android lint
+        run: gradle --no-daemon :app:lintDebug
+
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: RunTrack-UI-Prototype-debug-apk
+          name: RunTrack-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
