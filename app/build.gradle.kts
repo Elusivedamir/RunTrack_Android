@@ -1,37 +1,9 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
 }
-
-/*
- * External configuration precedence:
- *
- * 1. Environment variable
- * 2. Local secrets.properties (never committed)
- * 3. secrets.defaults.properties (safe empty defaults)
- *
- * API credentials must never be committed to the repository.
- */
-val runTrackSecrets = Properties().apply {
-    val defaultsFile = rootProject.file("secrets.defaults.properties")
-    if (defaultsFile.isFile) {
-        defaultsFile.inputStream().use { load(it) }
-    }
-
-    val localSecretsFile = rootProject.file("secrets.properties")
-    if (localSecretsFile.isFile) {
-        localSecretsFile.inputStream().use { load(it) }
-    }
-}
-
-val mapsApiKey: String =
-    providers.environmentVariable("MAPS_API_KEY").orNull
-        ?.takeIf { it.isNotBlank() }
-        ?: runTrackSecrets.getProperty("MAPS_API_KEY", "")
 
 android {
     namespace = "com.runtrack.app"
@@ -45,9 +17,6 @@ android {
         versionCode = 7
         versionName = "0.7.0-functional-core"
 
-        // Used later by Maps SDK manifest metadata.
-        // Empty value is valid until Maps integration is enabled.
-        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
     }
 
     buildTypes {
@@ -103,10 +72,14 @@ dependencies {
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
     ksp("androidx.room:room-compiler:2.8.4")
+    // GPS remains Google Play Services Location; Maps no longer depends on Google.
     implementation("com.google.android.gms:play-services-location:21.4.0")
-    implementation("com.google.android.gms:play-services-maps:20.0.0")
-    // Keep the Maps Compose line compatible with this project's Kotlin 2.2 compiler.
-    implementation("com.google.maps.android:maps-compose:7.0.0")
+
+    implementation("org.maplibre.compose:maplibre-compose:0.13.0") {
+        exclude(group = "org.maplibre.gl", module = "android-sdk")
+    }
+    implementation("org.maplibre.gl:android-sdk-opengl:13.0.2")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.health.connect:connect-client:1.1.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:core-ktx:1.7.0")

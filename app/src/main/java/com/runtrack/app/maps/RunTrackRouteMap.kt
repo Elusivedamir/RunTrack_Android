@@ -35,23 +35,33 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.common.ConnectionResult
-import com.google.android.gms.common.GoogleApiAvailability
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.LatLngBounds
-import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.Circle
-import com.google.maps.android.compose.MapProperties
-import com.google.maps.android.compose.MapType
-import com.google.maps.android.compose.MapUiSettings
-import com.google.maps.android.compose.Polyline
-import com.google.maps.android.compose.rememberCameraPositionState
 import com.runtrack.app.domain.LocationSample
 import com.runtrack.app.domain.MapLayer
 import com.runtrack.app.domain.RouteGeometry
 import kotlinx.coroutines.launch
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.PaddingValues
+import org.maplibre.compose.camera.rememberCameraState
+import org.maplibre.compose.expressions.dsl.const
+import org.maplibre.compose.layers.CircleLayer
+import org.maplibre.compose.layers.LineLayer
+import org.maplibre.compose.map.GestureOptions
+import org.maplibre.compose.map.MapOptions
+import org.maplibre.compose.map.MaplibreMap
+import org.maplibre.compose.map.OrnamentOptions
+import org.maplibre.compose.sources.GeoJsonData
+import org.maplibre.compose.sources.GeoJsonOptions
+import org.maplibre.compose.sources.rememberGeoJsonSource
+import org.maplibre.compose.style.BaseStyle
+import org.maplibre.spatialk.geojson.BoundingBox
+import org.maplibre.spatialk.geojson.MultiLineString
+import org.maplibre.spatialk.geojson.Point
+import org.maplibre.spatialk.geojson.Position
+import org.maplibre.spatialk.geojson.toJson
+import kotlin.math.max
+import kotlin.time.Duration.Companion.milliseconds
 
 private val MapBackground = Color(0xFF0C1821)
 private val TerrainBackground = Color(0xFF0E1B16)
@@ -70,120 +80,188 @@ fun RunTrackRouteMap(
     onLayer: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val mapsAvailable = remember(context) {
-        runCatching {
-            MapsRuntimeConfig.isConfigured(context) &&
-                GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS
-        }.getOrDefault(false)
-    }
     val cleanRoutes = remember(routes) {
         routes.map { RouteGeometry.downsampleForRender(it) }.filter { it.isNotEmpty() }
     }
+    var mapFailed by remember(layer) { mutableStateOf(false) }
 
-    if (mapsAvailable && cleanRoutes.isNotEmpty()) {
-        GoogleRouteMap(cleanRoutes, layer, onLayer, modifier)
+    if (cleanRoutes.isNotEmpty() && !mapFailed) {
+        MapLibreRouteMap(
+            routes = cleanRoutes,
+            layer = layer,
+            onLayer = onLayer,
+            onMapFailed = { mapFailed = true },
+            modifier = modifier,
+        )
     } else {
         CanvasRouteMap(cleanRoutes, layer, onLayer, modifier)
     }
 }
 
 @Composable
-private fun GoogleRouteMap(
+private fun MapLibreRouteMap(
     routes: List<List<LocationSample>>,
     layer: MapLayer,
     onLayer: () -> Unit,
+    onMapFailed: () -> Unit,
     modifier: Modifier,
 ) {
-    val latLngRoutes = remember(routes) {
-        routes.map { route -> route.map { LatLng(it.latitude, it.longitude) } }
-    }
-    val allPoints = remember(latLngRoutes) { latLngRoutes.flatten() }
-    val bounds = remember(allPoints) {
-        LatLngBounds.builder().apply { allPoints.forEach { include(it) } }.build()
-    }
-    val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(allPoints.first(), 15f)
-    }
+    val context = LocalContext.current
+    val allPoints = remember(routes) { routes.flatten() }
+    val bounds = remember(allPoints) { paddedBounds(allPoints) }
+    val cameraState = rememberCameraState()
     val scope = rememberCoroutineScope()
-    var mapLoaded by remember { mutableStateOf(false) }
+    var mapLoaded by remember(layer) { mutableStateOf(false) }
 
-    fun centerRoute(animated: Boolean) {
-        if (!mapLoaded) return
-        val update = if (allPoints.size == 1) {
-            CameraUpdateFactory.newLatLngZoom(allPoints.first(), 16f)
-        } else {
-            CameraUpdateFactory.newLatLngBounds(bounds, 96)
-        }
-        if (animated) {
-            scope.launch {
-                runCatching { cameraPositionState.animate(update, 450) }
+    val lineSegments = remember(routes) { routes.filter { it.size >= 2 } }
+    val lineGeoJson = remember(lineSegments) {
+        MultiLineString(
+            lineSegments.map { segment ->
+                segment.map { point ->
+                    Position(longitude = point.longitude, latitude = point.latitude)
+                }
             }
-        } else {
-            runCatching { cameraPositionState.move(update) }
-        }
+        ).toJson()
     }
+    val startGeoJson = remember(routes) {
+        val point = routes.first().first()
+        Point(longitude = point.longitude, latitude = point.latitude).toJson()
+    }
+    val finishGeoJson = remember(routes) {
+        val point = routes.last().last()
+        Point(longitude = point.longitude, latitude = point.latitude).toJson()
+    }
+
+    val cameraPadding = PaddingValues(horizontal = 34.dp, vertical = 44.dp)
 
     LaunchedEffect(mapLoaded, bounds) {
-        if (mapLoaded) centerRoute(animated = false)
+        if (mapLoaded) {
+            try {
+                cameraState.jumpTo(bounds, padding = cameraPadding)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    fun centerRoute() {
+        if (!mapLoaded) return
+        scope.launch {
+            try {
+                cameraState.animateTo(
+                    boundingBox = bounds,
+                    padding = cameraPadding,
+                    duration = 450.milliseconds,
+                )
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     Box(modifier.clip(RoundedCornerShape(16.dp))) {
-        GoogleMap(
+        MaplibreMap(
             modifier = Modifier.fillMaxSize(),
-            cameraPositionState = cameraPositionState,
-            contentDescription = "Карта маршрута",
-            properties = MapProperties(
-                mapType = if (layer == MapLayer.TERRAIN) MapType.TERRAIN else MapType.NORMAL,
+            baseStyle = BaseStyle.Json(OsmMapConfig.styleJson(layer)),
+            cameraState = cameraState,
+            options = MapOptions(
+                gestureOptions = GestureOptions(
+                    isRotateEnabled = false,
+                    isScrollEnabled = true,
+                    isTiltEnabled = false,
+                    isZoomEnabled = true,
+                    isDoubleTapEnabled = true,
+                    isQuickZoomEnabled = true,
+                ),
+                ornamentOptions = OrnamentOptions.OnlyLogo,
             ),
-            uiSettings = MapUiSettings(
-                compassEnabled = true,
-                mapToolbarEnabled = false,
-                myLocationButtonEnabled = false,
-                rotationGesturesEnabled = false,
-                tiltGesturesEnabled = false,
-                zoomControlsEnabled = false,
-            ),
-            onMapLoaded = { mapLoaded = true },
+            onMapLoadFailed = { onMapFailed() },
+            onMapLoadFinished = { mapLoaded = true },
         ) {
-            latLngRoutes.forEachIndexed { index, points ->
-                if (points.size >= 2) {
-                    Polyline(
-                        points = points,
-                        color = RouteColors[index % RouteColors.size],
-                        width = 9f,
-                        geodesic = true,
-                        zIndex = 2f,
-                    )
-                }
-            }
-            latLngRoutes.firstOrNull()?.firstOrNull()?.let { start ->
-                Circle(
-                    center = start,
-                    radius = 4.0,
-                    fillColor = RouteGreen,
-                    strokeColor = Color.White,
-                    strokeWidth = 2f,
-                    zIndex = 3f,
+            if (lineSegments.isNotEmpty()) {
+                val routeSource = rememberGeoJsonSource(
+                    data = GeoJsonData.JsonString(lineGeoJson),
+                    options = GeoJsonOptions(synchronousUpdate = true),
+                )
+                LineLayer(
+                    id = "runtrack-route-casing",
+                    source = routeSource,
+                    color = const(Color.Black.copy(alpha = 0.42f)),
+                    width = const(7.dp),
+                )
+                LineLayer(
+                    id = "runtrack-route",
+                    source = routeSource,
+                    color = const(RouteGreen),
+                    width = const(4.dp),
                 )
             }
-            latLngRoutes.lastOrNull()?.lastOrNull()?.let { finish ->
-                Circle(
-                    center = finish,
-                    radius = 5.0,
-                    fillColor = RouteGreen,
-                    strokeColor = Color.White,
-                    strokeWidth = 3f,
-                    zIndex = 3f,
-                )
-            }
+
+            val startSource = rememberGeoJsonSource(
+                data = GeoJsonData.JsonString(startGeoJson),
+                options = GeoJsonOptions(synchronousUpdate = true),
+            )
+            CircleLayer(
+                id = "runtrack-start",
+                source = startSource,
+                color = const(RouteGreen),
+                radius = const(5.dp),
+                strokeColor = const(Color.White),
+                strokeWidth = const(2.dp),
+            )
+
+            val finishSource = rememberGeoJsonSource(
+                data = GeoJsonData.JsonString(finishGeoJson),
+                options = GeoJsonOptions(synchronousUpdate = true),
+            )
+            CircleLayer(
+                id = "runtrack-finish",
+                source = finishSource,
+                color = const(RouteGreen),
+                radius = const(6.dp),
+                strokeColor = const(Color.White),
+                strokeWidth = const(2.dp),
+            )
         }
+
         RouteMapControls(
-            onCenter = { centerRoute(animated = true) },
+            onCenter = ::centerRoute,
             onLayer = onLayer,
             modifier = Modifier.align(Alignment.TopEnd).padding(9.dp),
         )
+
+        Text(
+            text = OsmMapConfig.ATTRIBUTION,
+            color = Color.White,
+            fontSize = 9.sp,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(5.dp)
+                .background(Color(0xC7111E27), RoundedCornerShape(4.dp))
+                .clickable {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(OsmMapConfig.COPYRIGHT_URL))
+                        )
+                    }
+                }
+                .padding(horizontal = 5.dp, vertical = 3.dp),
+        )
     }
+}
+
+private fun paddedBounds(points: List<LocationSample>): BoundingBox {
+    val west = points.minOf { it.longitude }
+    val east = points.maxOf { it.longitude }
+    val south = points.minOf { it.latitude }
+    val north = points.maxOf { it.latitude }
+    val lonPad = max((east - west) * 0.08, 0.00045)
+    val latPad = max((north - south) * 0.08, 0.00045)
+
+    return BoundingBox(
+        west = (west - lonPad).coerceAtLeast(-180.0),
+        south = (south - latPad).coerceAtLeast(-90.0),
+        east = (east + lonPad).coerceAtMost(180.0),
+        north = (north + latPad).coerceAtMost(90.0),
+    )
 }
 
 @Composable

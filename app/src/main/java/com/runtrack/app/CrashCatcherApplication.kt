@@ -8,11 +8,14 @@ import java.io.PrintWriter
 import java.io.StringWriter
 import java.time.Instant
 import com.runtrack.app.tracking.RunTrackRuntime
+import okhttp3.OkHttpClient
+import org.maplibre.android.module.http.HttpRequestUtil
 
 class CrashCatcherApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        configureOsmHttpClient()
         RunTrackRuntime.initialize(this)
 
         val previous = Thread.getDefaultUncaughtExceptionHandler()
@@ -43,6 +46,29 @@ class CrashCatcherApplication : Application() {
                 kotlin.system.exitProcess(10)
             }
         }
+    }
+
+
+    /**
+     * OSM public tile policy requires an application-identifying User-Agent.
+     * Default HTTP caching is intentionally preserved.
+     */
+    private fun configureOsmHttpClient() {
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                    .newBuilder()
+                    .header(
+                        "User-Agent",
+                        "RunTrack-Android/0.7 (com.runtrack.app; +https://github.com/Elusivedamir/RunTrack_Android)",
+                    )
+                    .header("X-Requested-With", packageName)
+                    .build()
+                chain.proceed(request)
+            }
+            .build()
+
+        HttpRequestUtil().setOkHttpClient(client)
     }
 
     companion object {

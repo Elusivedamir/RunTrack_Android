@@ -27,16 +27,6 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.RunTrackPrototype">
 
-        <!--
-            Google Maps Android API key.
-
-            The value is injected from MAPS_API_KEY and must never be
-            hard-coded into the repository.
-        -->
-        <meta-data
-            android:name="com.google.android.geo.API_KEY"
-            android:value="${MAPS_API_KEY}" />
-
         <activity
             android:name=".CrashReportActivity"
             android:exported="false"
