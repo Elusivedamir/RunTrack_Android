@@ -15,9 +15,6 @@ class CrashCatcherApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        configureOsmHttpClient()
-        RunTrackRuntime.initialize(this)
-
         val previous = Thread.getDefaultUncaughtExceptionHandler()
 
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
@@ -46,8 +43,10 @@ class CrashCatcherApplication : Application() {
                 kotlin.system.exitProcess(10)
             }
         }
-    }
 
+        runCatching { configureOsmHttpClient() }
+        RunTrackRuntime.initialize(this)
+    }
 
     /**
      * OSM public tile policy requires an application-identifying User-Agent.
