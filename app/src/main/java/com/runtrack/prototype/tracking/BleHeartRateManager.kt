@@ -1,6 +1,7 @@
 package com.runtrack.prototype.tracking
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
@@ -43,6 +44,7 @@ data class BleHeartRateDevice(
  * Standard Bluetooth SIG Heart Rate Service client (0x180D / Measurement 0x2A37).
  * It never marks a device connected until GATT service discovery and CCCD notification subscription succeed.
  */
+@SuppressLint("MissingPermission")
 class BleHeartRateManager(
     context: Context,
     private val settingsRepository: SettingsRepository,
