@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.runtrack.prototype"
+    namespace = "com.runtrack.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.runtrack.prototype"
+        applicationId = "com.runtrack.app"
         minSdk = 26
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
