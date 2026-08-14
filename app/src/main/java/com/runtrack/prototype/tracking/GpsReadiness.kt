@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.os.Build
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
@@ -30,7 +31,14 @@ class GpsReadinessChecker(private val context: Context) {
     fun basicStatus(): GpsReadiness {
         val permission = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val manager = context.getSystemService(LocationManager::class.java)
-        val enabled = runCatching { manager.isLocationEnabled }.getOrDefault(false)
+        val enabled = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                manager.isLocationEnabled
+            } else {
+                manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                    manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+            }
+        }.getOrDefault(false)
         return GpsReadiness(permission, enabled, false, null, SystemClock.elapsedRealtime())
     }
 
