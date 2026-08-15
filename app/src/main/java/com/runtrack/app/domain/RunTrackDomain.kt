@@ -136,6 +136,14 @@ object WorkoutMath {
         return WorkoutMetrics(safeDistance, safeElapsed, safeMoving, speed.takeIf { it.isFinite() } ?: 0.0, pace?.takeIf { it.isFinite() && it > 0 })
     }
 
+    fun bodyMassIndex(weightKg: Double?, heightCm: Double?): Double? {
+        val weight = weightKg?.takeIf { it.isFinite() && it in 30.0..300.0 } ?: return null
+        val height = heightCm?.takeIf { it.isFinite() && it in 80.0..250.0 } ?: return null
+        val heightMeters = height / 100.0
+        return (weight / (heightMeters * heightMeters))
+            .takeIf { it.isFinite() && it > 0.0 }
+    }
+
     fun estimatedCalories(type: WorkoutType, movingMillis: Long, distanceMeters: Double, weightKg: Double?): Int {
         val hours = movingMillis.coerceAtLeast(0) / 3_600_000.0
         if (hours <= 0.0) return 0

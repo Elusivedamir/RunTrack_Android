@@ -203,6 +203,7 @@ class PortableBackupManager(
         put("units", units.name)
         put("mapLayer", mapLayer.name)
         weightKg?.let { put("weightKg", it) }
+        heightCm?.let { put("heightCm", it) }
         heartRateDeviceAddress?.let { put("heartRateDeviceAddress", it) }
         heartRateDeviceName?.let { put("heartRateDeviceName", it) }
     }
@@ -214,6 +215,7 @@ class PortableBackupManager(
         units = optString("units").let { runCatching { UnitSystem.valueOf(it) }.getOrDefault(UnitSystem.METRIC) },
         mapLayer = optString("mapLayer").let { runCatching { MapLayer.valueOf(it) }.getOrDefault(MapLayer.STANDARD) },
         weightKg = if (has("weightKg")) optDouble("weightKg").takeIf { it.isFinite() && it in 30.0..300.0 } else null,
+        heightCm = if (has("heightCm")) optDouble("heightCm").takeIf { it.isFinite() && it in 80.0..250.0 } else null,
         heartRateDeviceAddress = optString("heartRateDeviceAddress").takeIf { has("heartRateDeviceAddress") && it.isNotBlank() && it.length <= 32 },
         heartRateDeviceName = optString("heartRateDeviceName").takeIf { has("heartRateDeviceName") && it.isNotBlank() && it.length <= 100 },
     )

@@ -196,21 +196,39 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
         _gpsReadiness.value = gpsChecker.basicStatus()
     }
 
-    fun startWorkout(onStarted: (String) -> Unit = {}) = launchExclusive("start") {
+    fun startWorkout(
+        allowWeakGps: Boolean = false,
+        onStarted: (String) -> Unit = {},
+    ) = launchExclusive("start") {
         val goal = _goal.value
         if (!goal.isValid()) error("Некорректная цель тренировки")
+
         val cachedGps = _gpsReadiness.value
-        val nowElapsedForGps = SystemClock.elapsedRealtime()
-        val cachedFixIsFresh =
-            cachedGps.ready &&
-                (nowElapsedForGps - cachedGps.checkedAtElapsedRealtimeMillis).coerceAtLeast(0L) <= 15_000L
-        val gps = if (cachedFixIsFresh) {
-            cachedGps
+        val gps = if (allowWeakGps) {
+            // Manual override skips only the fresh/accuracy gate. Permission and the
+            // Android location switch are still mandatory. The tracking repository
+            // keeps rejecting poor GPS points, so a weak fix cannot fabricate distance.
+            gpsChecker.basicStatus()
         } else {
-            gpsChecker.checkCurrentFix(GpsFilterPolicy.forType(_workoutType.value).maxAccuracyMeters)
+            val nowElapsedForGps = SystemClock.elapsedRealtime()
+            val cachedFixIsFresh =
+                cachedGps.ready &&
+                    (nowElapsedForGps - cachedGps.checkedAtElapsedRealtimeMillis)
+                        .coerceAtLeast(0L) <= 15_000L
+            if (cachedFixIsFresh) {
+                cachedGps
+            } else {
+                gpsChecker.checkCurrentFix(
+                    GpsFilterPolicy.forType(_workoutType.value).maxAccuracyMeters
+                )
+            }
         }
         _gpsReadiness.value = gps
-        check(gps.ready) { gpsFailureMessage(gps) }
+        check(gps.finePermissionGranted) { "Нужно разрешение на точную геолокацию" }
+        check(gps.locationEnabled) { "Включите геолокацию Android" }
+        if (!allowWeakGps) {
+            check(gps.ready) { gpsFailureMessage(gps) }
+        }
 
         val nowWall = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
@@ -373,6 +391,7 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
     fun setUnits(value: UnitSystem) = viewModelScope.launch { settingsRepo.setUnits(value) }
     fun setMapLayer(value: MapLayer) = viewModelScope.launch { settingsRepo.setMapLayer(value) }
     fun setWeightKg(value: Double?) = viewModelScope.launch { settingsRepo.setWeightKg(value) }
+    fun setHeightCm(value: Double?) = viewModelScope.launch { settingsRepo.setHeightCm(value) }
     fun setProfileName(value: String) = viewModelScope.launch { settingsRepo.setProfileName(value) }
 
     fun createEncryptedBackup(passphrase: String, onReady: (ByteArray) -> Unit) = launchExclusive("backup") {

@@ -16,6 +16,7 @@ data class RunTrackSettings(
     val units: UnitSystem = UnitSystem.METRIC,
     val mapLayer: MapLayer = MapLayer.STANDARD,
     val weightKg: Double? = null,
+    val heightCm: Double? = null,
     val profileName: String = "Пользователь",
     val heartRateDeviceAddress: String? = null,
     val heartRateDeviceName: String? = null,
@@ -28,6 +29,7 @@ class SettingsRepository(private val context: Context) {
         val units = stringPreferencesKey("unit_system")
         val mapLayer = stringPreferencesKey("map_layer")
         val weightKg = doublePreferencesKey("weight_kg")
+        val heightCm = doublePreferencesKey("height_cm")
         val profileName = stringPreferencesKey("profile_name")
         val hrAddress = stringPreferencesKey("hr_device_address")
         val hrName = stringPreferencesKey("hr_device_name")
@@ -39,7 +41,8 @@ class SettingsRepository(private val context: Context) {
             keepScreenOn = p[Keys.keepScreen] ?: false,
             units = p[Keys.units]?.let { runCatching { UnitSystem.valueOf(it) }.getOrNull() } ?: UnitSystem.METRIC,
             mapLayer = p[Keys.mapLayer]?.let { runCatching { MapLayer.valueOf(it) }.getOrNull() } ?: MapLayer.STANDARD,
-            weightKg = p[Keys.weightKg]?.takeIf { it in 30.0..300.0 },
+            weightKg = p[Keys.weightKg]?.takeIf { it.isFinite() && it in 30.0..300.0 },
+            heightCm = p[Keys.heightCm]?.takeIf { it.isFinite() && it in 80.0..250.0 },
             profileName = p[Keys.profileName]?.trim()?.takeIf { it.isNotBlank() }?.take(80) ?: "Пользователь",
             heartRateDeviceAddress = p[Keys.hrAddress]?.takeIf { it.isNotBlank() },
             heartRateDeviceName = p[Keys.hrName]?.takeIf { it.isNotBlank() },
@@ -64,12 +67,17 @@ class SettingsRepository(private val context: Context) {
         if (value != null && value.isFinite() && value in 30.0..300.0) it[Keys.weightKg] = value else it.remove(Keys.weightKg)
     }
 
+    suspend fun setHeightCm(value: Double?) = context.runTrackDataStore.edit {
+        if (value != null && value.isFinite() && value in 80.0..250.0) it[Keys.heightCm] = value else it.remove(Keys.heightCm)
+    }
+
     suspend fun restore(value: RunTrackSettings) = context.runTrackDataStore.edit { p ->
         p[Keys.notifications] = value.notificationsEnabled
         p[Keys.keepScreen] = value.keepScreenOn
         p[Keys.units] = value.units.name
         p[Keys.mapLayer] = value.mapLayer.name
-        if (value.weightKg != null && value.weightKg in 30.0..300.0) p[Keys.weightKg] = value.weightKg else p.remove(Keys.weightKg)
+        if (value.weightKg != null && value.weightKg.isFinite() && value.weightKg in 30.0..300.0) p[Keys.weightKg] = value.weightKg else p.remove(Keys.weightKg)
+        if (value.heightCm != null && value.heightCm.isFinite() && value.heightCm in 80.0..250.0) p[Keys.heightCm] = value.heightCm else p.remove(Keys.heightCm)
         if (value.profileName.isBlank()) p.remove(Keys.profileName) else p[Keys.profileName] = value.profileName.trim().take(80)
         if (value.heartRateDeviceAddress.isNullOrBlank()) p.remove(Keys.hrAddress) else p[Keys.hrAddress] = value.heartRateDeviceAddress
         if (value.heartRateDeviceName.isNullOrBlank()) p.remove(Keys.hrName) else p[Keys.hrName] = value.heartRateDeviceName

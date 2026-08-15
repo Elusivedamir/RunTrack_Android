@@ -391,6 +391,17 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
     var startCountdownSeconds by remember { mutableIntStateOf(0) }
     var startCountdownStartedAtElapsed by remember { mutableLongStateOf(0L) }
     var startCountdownDeadlineElapsed by remember { mutableLongStateOf(0L) }
+    var allowWeakGpsStart by remember { mutableStateOf(false) }
+    var weakGpsWarning by remember { mutableStateOf(false) }
+
+    fun beginStartCountdown(allowWeakGps: Boolean) {
+        val now = SystemClock.elapsedRealtime()
+        allowWeakGpsStart = allowWeakGps
+        startCountdownStartedAtElapsed = now
+        startCountdownDeadlineElapsed = now + START_COUNTDOWN_INITIAL_MILLIS
+        startCountdownSeconds = 10
+        startCountdownActive = true
+    }
 
     DisposableEffect(viewModel) {
         viewModel.startGpsReadinessMonitoring()
@@ -425,9 +436,11 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
             val remainingMillis = startCountdownDeadlineElapsed - now
 
             if (remainingMillis <= 0L) {
+                val manualWeakGpsOverride = allowWeakGpsStart
                 startCountdownSeconds = 0
                 startCountdownActive = false
-                viewModel.startWorkout { onNavigate(2) }
+                allowWeakGpsStart = false
+                viewModel.startWorkout(allowWeakGps = manualWeakGpsOverride) { onNavigate(2) }
                 break
             }
 
@@ -514,21 +527,52 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
                             ((remainingMillis + 999L) / 1_000L).toInt().coerceIn(0, 300)
                     } else if (!gps.finePermissionGranted) {
                         permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                    } else if (!gps.locationEnabled || !gps.ready) {
+                    } else if (!gps.locationEnabled) {
                         viewModel.refreshGpsReadiness()
+                    } else if (!gps.ready) {
+                        weakGpsWarning = true
                     } else {
-                        val now = SystemClock.elapsedRealtime()
-                        startCountdownStartedAtElapsed = now
-                        startCountdownDeadlineElapsed =
-                            now + START_COUNTDOWN_INITIAL_MILLIS
-                        startCountdownSeconds = 10
-                        startCountdownActive = true
+                        beginStartCountdown(allowWeakGps = false)
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(14.dp))
         }
+    }
+
+    if (weakGpsWarning) {
+        val accuracyText = gps.accuracyMeters?.let { "Текущая точность около ±${it.toInt()} м. " } ?: ""
+        AlertDialog(
+            onDismissRequest = { weakGpsWarning = false },
+            title = { Text("Слабый GPS-сигнал") },
+            text = {
+                Text(
+                    "${accuracyText}Можно начать тренировку сейчас, но маршрут и расстояние " +
+                        "могут появиться только после получения достаточно точной GPS-точки."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        weakGpsWarning = false
+                        beginStartCountdown(allowWeakGps = true)
+                    }
+                ) {
+                    Text("Начать всё равно")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        weakGpsWarning = false
+                        viewModel.refreshGpsReadiness()
+                    }
+                ) {
+                    Text("Подождать GPS")
+                }
+            },
+        )
     }
 
     if (goalEditor != null) {
@@ -1176,19 +1220,33 @@ private fun ComparisonRow(label: String, current: String, previous: String, delt
 @Composable
 private fun ProfileScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -> Unit) {
     val stats by viewModel.stats.collectAsStateWithLifecycle(); val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val bmi = remember(settings.weightKg, settings.heightCm) {
+        WorkoutMath.bodyMassIndex(settings.weightKg, settings.heightCm)
+    }
+    val bodySummary = buildList {
+        settings.weightKg?.let { add(String.format(Locale.getDefault(), "%.1f кг", it)) }
+        settings.heightCm?.let { add(String.format(Locale.getDefault(), "%.0f см", it)) }
+        bmi?.let { add(String.format(Locale.getDefault(), "ИМТ %.1f", it)) }
+    }.joinToString(" · ")
+    val profileSubtitle =
+        if (bodySummary.isBlank()) "RunTrack · вес и рост не указаны"
+        else "RunTrack · $bodySummary"
+
     var editProfile by remember { mutableStateOf(false) }
     var nameDraft by remember { mutableStateOf("") }
     var weightDraft by remember { mutableStateOf("") }
+    var heightDraft by remember { mutableStateOf("") }
     var profileError by remember { mutableStateOf<String?>(null) }
     fun openEdit() {
         nameDraft = settings.profileName
-        weightDraft = settings.weightKg?.let { String.format(java.util.Locale.US, "%.1f", it) } ?: ""
+        weightDraft = settings.weightKg?.let { String.format(Locale.US, "%.1f", it) } ?: ""
+        heightDraft = settings.heightCm?.let { String.format(Locale.US, "%.1f", it) } ?: ""
         profileError = null
         editProfile = true
     }
     NativePage(title = "Профиль", bottomNavSelected = 3, onNavigate = onNavigate) {
         LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(bottom = 14.dp)) {
-            item { Row(Modifier.fillMaxWidth().background(RtSurface, RoundedCornerShape(16.dp)).clickable { openEdit() }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(62.dp).background(RtGreen.copy(alpha = 0.16f), CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Person, null, tint = RtGreen, modifier = Modifier.size(34.dp)) }; Spacer(Modifier.width(14.dp)); Column { Text(settings.profileName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold); Text(settings.weightKg?.let { "RunTrack · ${String.format("%.1f", it)} кг" } ?: "RunTrack · вес не указан", color = RtMuted, fontSize = 11.sp) } } }
+            item { Row(Modifier.fillMaxWidth().background(RtSurface, RoundedCornerShape(16.dp)).clickable { openEdit() }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(62.dp).background(RtGreen.copy(alpha = 0.16f), CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Person, null, tint = RtGreen, modifier = Modifier.size(34.dp)) }; Spacer(Modifier.width(14.dp)); Column { Text(settings.profileName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold); Text(profileSubtitle, color = RtMuted, fontSize = 11.sp) } } }
             item { Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) { MetricBox("Всего", stats.all.workouts.toString(), Modifier.weight(1f), RtGreen); MetricBox("Дистанция", RunTrackFormatter.distance(stats.all.distanceMeters, settings.units), Modifier.weight(1f)); MetricBox("Время", RunTrackFormatter.duration(stats.all.elapsedMillis), Modifier.weight(1f)) } }
             item { InfoRow(Icons.Outlined.CalendarMonth, "Календарь", "Тренировки по дням", RtGreen) { onNavigate(15) } }
             item { InfoRow(Icons.Outlined.Map, "Все маршруты", "Карта сохранённых тренировок", RtBlue) { onNavigate(16) } }
@@ -1200,19 +1258,55 @@ private fun ProfileScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -> Uni
         onDismissRequest = { editProfile = false },
         title = { Text("Локальный профиль") },
         text = { Column {
-            OutlinedTextField(nameDraft, { nameDraft = it; profileError = null }, label = { Text("Имя") }, singleLine = true)
+            OutlinedTextField(
+                nameDraft,
+                { nameDraft = it; profileError = null },
+                label = { Text("Имя") },
+                singleLine = true,
+            )
             Spacer(Modifier.height(8.dp))
-            OutlinedTextField(weightDraft, { weightDraft = it.replace(',', '.'); profileError = null }, label = { Text("Вес, кг (необязательно)") }, singleLine = true)
-            Text("Вес используется только для будущей локальной оценки калорий.", color = RtMuted, fontSize = 10.sp)
+            OutlinedTextField(
+                weightDraft,
+                { weightDraft = it.replace(',', '.'); profileError = null },
+                label = { Text("Вес, кг (необязательно)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                heightDraft,
+                { heightDraft = it.replace(',', '.'); profileError = null },
+                label = { Text("Рост, см (необязательно)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Вес используется для оценки калорий. Рост вместе с весом используется для расчёта ИМТ.",
+                color = RtMuted,
+                fontSize = 10.sp,
+            )
             profileError?.let { Text(it, color = RtRed, fontSize = 10.sp) }
         } },
         confirmButton = { TextButton(onClick = {
             val name = nameDraft.trim()
             val weight = weightDraft.trim().takeIf { it.isNotEmpty() }?.toDoubleOrNull()
+            val height = heightDraft.trim().takeIf { it.isNotEmpty() }?.toDoubleOrNull()
             when {
-                name.isEmpty() || name.length > 50 -> profileError = "Имя: от 1 до 50 символов"
-                weightDraft.isNotBlank() && (weight == null || weight !in 30.0..300.0) -> profileError = "Вес должен быть от 30 до 300 кг"
-                else -> { viewModel.setProfileName(name); viewModel.setWeightKg(weight); editProfile = false }
+                name.isEmpty() || name.length > 50 ->
+                    profileError = "Имя: от 1 до 50 символов"
+                weightDraft.isNotBlank() &&
+                    (weight == null || !weight.isFinite() || weight !in 30.0..300.0) ->
+                    profileError = "Вес должен быть от 30 до 300 кг"
+                heightDraft.isNotBlank() &&
+                    (height == null || !height.isFinite() || height !in 80.0..250.0) ->
+                    profileError = "Рост должен быть от 80 до 250 см"
+                else -> {
+                    viewModel.setProfileName(name)
+                    viewModel.setWeightKg(weight)
+                    viewModel.setHeightCm(height)
+                    editProfile = false
+                }
             }
         }) { Text("Сохранить") } },
         dismissButton = { TextButton(onClick = { editProfile = false }) { Text("Отмена") } },

@@ -28,6 +28,14 @@ class RunTrackDomainTest {
         assertEquals(700, WorkoutMath.estimatedCalories(WorkoutType.RUN, hour, 10_000.0, 70.0))
     }
 
+    @Test fun bodyMassIndexRequiresValidWeightAndHeight() {
+        assertEquals(22.857, requireNotNull(WorkoutMath.bodyMassIndex(70.0, 175.0)), 0.001)
+        assertNull(WorkoutMath.bodyMassIndex(null, 175.0))
+        assertNull(WorkoutMath.bodyMassIndex(70.0, null))
+        assertNull(WorkoutMath.bodyMassIndex(70.0, 79.9))
+        assertNull(WorkoutMath.bodyMassIndex(301.0, 175.0))
+    }
+
     @Test fun gpsFilterRejectsJumpAndDuplicate() {
         val filter = GpsPointFilter(GpsFilterPolicy.forType(WorkoutType.RUN))
         val a = LocationSample(1_000, 52.5200, 13.4050, 5f)
