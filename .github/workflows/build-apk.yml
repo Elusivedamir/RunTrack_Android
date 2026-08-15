@@ -137,6 +137,31 @@ jobs:
       # 6. Реальный запуск APK на Android Emulator.
       # Ловит startup/runtime crashes, которые assembleDebug не видит.
       # -------------------------------------------------
+      - name: Prepare Android AVD home
+        id: avd_home
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+
+          AVD_HOME="$HOME/.android/avd"
+
+          mkdir -p "$AVD_HOME"
+
+          chmod 700 "$HOME/.android"
+          chmod 700 "$AVD_HOME"
+
+          echo "ANDROID_AVD_HOME=$AVD_HOME" >> "$GITHUB_ENV"
+
+          echo "============================================================"
+          echo "ANDROID AVD HOME"
+          echo "============================================================"
+          echo "HOME=$HOME"
+          echo "ANDROID_AVD_HOME=$AVD_HOME"
+
+          test -d "$AVD_HOME"
+
+          ls -ld "$HOME/.android"
+          ls -ld "$AVD_HOME"
       - name: Enable KVM for Android Emulator
         id: kvm
         continue-on-error: true
@@ -151,12 +176,14 @@ jobs:
       - name: Runtime startup smoke test
         id: smoke
         continue-on-error: true
-        uses: reactivecircus/android-emulator-runner@v2.31.0
+        uses: reactivecircus/android-emulator-runner@v2.38.0
         with:
           api-level: 35
           target: google_apis
           arch: x86_64
           profile: pixel_7
+          avd-name: runtrack-ci
+          force-avd-creation: true
           disable-animations: true
           emulator-options: >-
             -no-window
@@ -299,6 +326,7 @@ jobs:
           echo "Android tests:  ${{ steps.android_tests.outcome }}"
           echo "Lint:           ${{ steps.lint.outcome }}"
           echo "APK build:      ${{ steps.apk.outcome }}"
+          echo "AVD home:       ${{ steps.avd_home.outcome }}"
           echo "KVM setup:      ${{ steps.kvm.outcome }}"
           echo "Runtime smoke:  ${{ steps.smoke.outcome }}"
           echo "========================================"
@@ -310,6 +338,7 @@ jobs:
           [ "${{ steps.android_tests.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.lint.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.apk.outcome }}" = "success" ] || FAILED=1
+          [ "${{ steps.avd_home.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.kvm.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.smoke.outcome }}" = "success" ] || FAILED=1
 
