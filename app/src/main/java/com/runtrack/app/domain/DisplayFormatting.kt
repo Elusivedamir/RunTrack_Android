@@ -51,6 +51,20 @@ object RunTrackFormatter {
         else String.format(locale, "%.0f ft", safe * 3.280839895)
     }
 
+    fun cadence(value: Double?, locale: Locale = Locale.getDefault()): String {
+        val safe = value?.takeIf { it.isFinite() && it > 0.0 } ?: return "Нет данных"
+        return String.format(locale, "%.0f шаг/мин", safe)
+    }
+
+    fun strideLength(meters: Double?, units: UnitSystem, locale: Locale = Locale.getDefault()): String {
+        val safe = meters?.takeIf { it.isFinite() && it > 0.0 } ?: return "Нет данных"
+        return if (units == UnitSystem.METRIC) {
+            String.format(locale, "%.2f м", safe)
+        } else {
+            String.format(locale, "%.2f ft", safe * 3.280839895)
+        }
+    }
+
     fun calories(value: Int): String = if (value > 0) "$value ккал" else "Нет данных"
 
     fun caloriesNumber(value: Int): String = if (value > 0) value.toString() else "—"

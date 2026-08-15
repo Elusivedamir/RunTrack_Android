@@ -4,6 +4,10 @@ import android.Manifest
 import android.app.*
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationManager
 import android.os.*
@@ -12,6 +16,8 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
 import com.runtrack.app.R
 import com.runtrack.app.domain.LocationSample
+import com.runtrack.app.domain.StepCounterAccumulator
+import com.runtrack.app.domain.WorkoutType
 import com.runtrack.app.voice.KilometerAnnouncementTracker
 import com.runtrack.app.weather.WeatherUpdateCoordinator
 import kotlinx.coroutines.*
@@ -21,6 +27,7 @@ class WorkoutTrackingService : Service() {
     private val serviceJob = SupervisorJob()
     private val scope = CoroutineScope(serviceJob + Dispatchers.IO)
     private lateinit var fused: FusedLocationProviderClient
+    private lateinit var sensorManager: SensorManager
     private lateinit var repository: TrackingRepository
     private lateinit var weatherUpdateCoordinator: WeatherUpdateCoordinator
     private val kilometerAnnouncementTracker = KilometerAnnouncementTracker()
@@ -28,6 +35,31 @@ class WorkoutTrackingService : Service() {
     @Volatile private var foregroundStarted = false
     @Volatile private var heartRateConnected = false
     private var checkpointJob: Job? = null
+    private var stepSensorRegistered = false
+    private var stepWorkoutId: String? = null
+    private var stepAccumulator: StepCounterAccumulator? = null
+
+    private val stepListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            val accumulator = stepAccumulator ?: return
+            val delta = when (event.sensor.type) {
+                Sensor.TYPE_STEP_COUNTER -> {
+                    val raw = event.values.firstOrNull()
+                        ?.takeIf { it.isFinite() && it >= 0f }
+                        ?.toLong()
+                        ?: return
+                    accumulator.onCounter(raw)
+                }
+                Sensor.TYPE_STEP_DETECTOR -> {
+                    if ((event.values.firstOrNull() ?: 0f) > 0f) accumulator.onDetector() else 0L
+                }
+                else -> 0L
+            }
+            if (delta > 0L) scope.launch { repository.onStepDelta(delta) }
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    }
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -72,6 +104,7 @@ class WorkoutTrackingService : Service() {
     override fun onCreate() {
         super.onCreate()
         fused = LocationServices.getFusedLocationProviderClient(this)
+        sensorManager = getSystemService(SensorManager::class.java)
         RunTrackRuntime.initialize(this)
         repository = RunTrackRuntime.trackingRepository
         weatherUpdateCoordinator = RunTrackRuntime.weatherUpdateCoordinator
@@ -119,6 +152,19 @@ class WorkoutTrackingService : Service() {
                     }
                 }.getOrDefault(false)
                 repository.reportGpsAvailability(locationEnabled)
+                val snapshot = repository.state.value
+                if (
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                    snapshot?.type != WorkoutType.BIKE &&
+                    snapshot?.stepTrackingReliable == true &&
+                    ContextCompat.checkSelfPermission(
+                        this@WorkoutTrackingService,
+                        Manifest.permission.ACTIVITY_RECOGNITION,
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    unregisterStepSensor()
+                    repository.configureStepTracking(false, nowWall)
+                }
                 runCatching { repository.checkpoint(nowWall, nowElapsed) }
             }
         }
@@ -128,6 +174,7 @@ class WorkoutTrackingService : Service() {
         when (intent?.action) {
             ACTION_START_UPDATES -> {
                 ensureForeground(paused = false)
+                configureStepSensor(active = true, allowInitialize = true)
                 if (requestLocationUpdatesIfAllowed()) {
                     repository.state.value?.let {
                         RunTrackRuntime.voiceAnnouncementManager.announceStart(it.workoutId)
@@ -136,10 +183,12 @@ class WorkoutTrackingService : Service() {
             }
             ACTION_RESUME_UPDATES -> {
                 ensureForeground(paused = false)
+                configureStepSensor(active = true, allowInitialize = false)
                 requestLocationUpdatesIfAllowed()
             }
             ACTION_PAUSE_UPDATES -> {
                 ensureForeground(paused = true)
+                stepAccumulator?.setActive(false)
                 removeLocationUpdates()
             }
             ACTION_STOP_UPDATES -> stopSelfSafely()
@@ -186,6 +235,92 @@ class WorkoutTrackingService : Service() {
         else -> "Запись тренировки активна"
     }
 
+    private fun configureStepSensor(active: Boolean, allowInitialize: Boolean) {
+        val snapshot = repository.state.value ?: run {
+            unregisterStepSensor()
+            return
+        }
+
+        if (snapshot.type == WorkoutType.BIKE) {
+            unregisterStepSensor()
+            if (allowInitialize || snapshot.stepTrackingReliable) {
+                scope.launch { repository.configureStepTracking(false, System.currentTimeMillis()) }
+            }
+            return
+        }
+
+        val permissionGranted =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACTIVITY_RECOGNITION,
+                ) == PackageManager.PERMISSION_GRANTED
+
+        if (!permissionGranted) {
+            unregisterStepSensor()
+            scope.launch { repository.configureStepTracking(false, System.currentTimeMillis()) }
+            return
+        }
+
+        if (!allowInitialize && !snapshot.stepTrackingReliable) {
+            unregisterStepSensor()
+            return
+        }
+
+        if (stepSensorRegistered && stepWorkoutId == snapshot.workoutId) {
+            stepAccumulator?.setActive(active)
+            return
+        }
+
+        unregisterStepSensor()
+        val sensor =
+            sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+                ?: sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+                ?: run {
+                    scope.launch { repository.configureStepTracking(false, System.currentTimeMillis()) }
+                    return
+                }
+
+        val needsReliabilityInitialization =
+            allowInitialize && !snapshot.stepTrackingReliable
+        val accumulator = StepCounterAccumulator(snapshot.stepCount ?: 0L).apply {
+            setActive(active && !needsReliabilityInitialization)
+        }
+        stepWorkoutId = snapshot.workoutId
+        stepAccumulator = accumulator
+        stepSensorRegistered = sensorManager.registerListener(
+            stepListener,
+            sensor,
+            SensorManager.SENSOR_DELAY_NORMAL,
+        )
+
+        if (!stepSensorRegistered) {
+            stepWorkoutId = null
+            stepAccumulator = null
+            scope.launch { repository.configureStepTracking(false, System.currentTimeMillis()) }
+        } else if (needsReliabilityInitialization) {
+            val workoutId = snapshot.workoutId
+            scope.launch {
+                val enabled =
+                    repository.configureStepTracking(true, System.currentTimeMillis())
+                if (enabled) {
+                    withContext(Dispatchers.Main.immediate) {
+                        if (stepWorkoutId == workoutId) {
+                            stepAccumulator?.setActive(active)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun unregisterStepSensor() {
+        if (stepSensorRegistered) sensorManager.unregisterListener(stepListener)
+        stepSensorRegistered = false
+        stepWorkoutId = null
+        stepAccumulator = null
+    }
+
     private fun requestLocationUpdatesIfAllowed(): Boolean {
         if (updatesRequested) return true
         val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -222,6 +357,7 @@ class WorkoutTrackingService : Service() {
 
     private fun stopSelfSafely() {
         removeLocationUpdates()
+        unregisterStepSensor()
         if (foregroundStarted) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE)
             else @Suppress("DEPRECATION") stopForeground(true)
@@ -232,6 +368,7 @@ class WorkoutTrackingService : Service() {
 
     override fun onDestroy() {
         removeLocationUpdates()
+        unregisterStepSensor()
         checkpointJob?.cancel()
         checkpointJob = null
         serviceJob.cancel()

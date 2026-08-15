@@ -42,6 +42,9 @@ data class WorkoutEntity(
     val note: String?,
     val createdAt: Long,
     val updatedAt: Long,
+    val stepCount: Long? = null,
+    @ColumnInfo(defaultValue = "0")
+    val stepTrackingReliable: Boolean = false,
 )
 
 @Entity(
@@ -250,7 +253,7 @@ interface WorkoutDao {
         HeartRateSampleEntity::class,
         WeatherSnapshotEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class RunTrackDatabase : RoomDatabase() {
@@ -304,6 +307,16 @@ abstract class RunTrackDatabase : RoomDatabase() {
             }
         }
 
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `workouts` ADD COLUMN `stepCount` INTEGER")
+                db.execSQL(
+                    "ALTER TABLE `workouts` ADD COLUMN " +
+                        "`stepTrackingReliable` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
         @Volatile private var INSTANCE: RunTrackDatabase? = null
 
         fun get(context: Context): RunTrackDatabase = INSTANCE ?: synchronized(this) {
@@ -312,7 +325,7 @@ abstract class RunTrackDatabase : RoomDatabase() {
                 RunTrackDatabase::class.java,
                 "runtrack.db",
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 .also { INSTANCE = it }
         }

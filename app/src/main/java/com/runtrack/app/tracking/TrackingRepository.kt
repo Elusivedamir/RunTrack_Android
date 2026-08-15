@@ -29,6 +29,8 @@ data class TrackingSnapshot(
     val lastLocationAtMillis: Long?,
     val gpsAvailable: Boolean = false,
     val lastLocationMonotonicMillis: Long? = null,
+    val stepCount: Long? = null,
+    val stepTrackingReliable: Boolean = false,
 )
 
 class TrackingRepository(private val db: RunTrackDatabase) {
@@ -49,6 +51,8 @@ class TrackingRepository(private val db: RunTrackDatabase) {
     private var accumulatedMovingMillis = 0L
     private var routePointCount = 0
     private var segmentIndex = 0
+    private var accumulatedStepCount: Long? = null
+    private var stepTrackingReliable = false
 
     suspend fun start(type: WorkoutType, goal: WorkoutGoal, wallClockMillis: Long, elapsedRealtimeMillis: Long): String = mutex.withLock {
         require(goal.isValid()) { "invalid workout goal" }
@@ -104,6 +108,8 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         movingStartedAtElapsedMillis = elapsedRealtimeMillis
         routePointCount = 0
         segmentIndex = 0
+        accumulatedStepCount = null
+        stepTrackingReliable = false
         _state.value = active.toSnapshot(type, routePointCount, null, null, gpsAvailable = true)
         id
     }
@@ -150,6 +156,8 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         lastAccepted = null
         routePointCount = relation.route.size
         segmentIndex = relation.route.maxOfOrNull { it.segmentIndex } ?: 0
+        accumulatedStepCount = effective.stepCount
+        stepTrackingReliable = effective.stepTrackingReliable && effective.stepCount != null
         val last = relation.route.maxWithOrNull(compareBy<RoutePointEntity> { it.segmentIndex }.thenBy { it.elapsedRealtimeMillis })
         val snapshot = effective.copy(distanceMeters = accumulatedDistanceMeters).toSnapshot(
             workoutType, routePointCount, last?.accuracyMeters, last?.timestampMillis
@@ -237,6 +245,8 @@ class TrackingRepository(private val db: RunTrackDatabase) {
             movingMillis = metrics.movingMillis,
             distanceMeters = metrics.distanceMeters,
             averageSpeedMps = metrics.averageSpeedMps,
+            stepCount = accumulatedStepCount,
+            stepTrackingReliable = stepTrackingReliable,
             goalReachedAt = goalReachedAt,
             updatedAt = sample.timestampMillis,
         )
@@ -263,6 +273,47 @@ class TrackingRepository(private val db: RunTrackDatabase) {
 
     suspend fun reportGpsAvailability(available: Boolean) = mutex.withLock {
         _state.value = _state.value?.copy(gpsAvailable = available)
+    }
+
+    suspend fun configureStepTracking(available: Boolean, wallClockMillis: Long): Boolean = mutex.withLock {
+        val id = activeWorkoutId ?: return false
+        val workoutType = type ?: return false
+        val current = dao.getWorkout(id) ?: return false
+        val reliable = available && workoutType != WorkoutType.BIKE
+
+        stepTrackingReliable = reliable
+        accumulatedStepCount = if (reliable) {
+            accumulatedStepCount ?: current.stepCount ?: 0L
+        } else {
+            null
+        }
+
+        val updated = current.copy(
+            stepCount = accumulatedStepCount,
+            stepTrackingReliable = stepTrackingReliable,
+            updatedAt = wallClockMillis,
+        )
+        check(dao.updateWorkout(updated) == 1)
+        _state.value = _state.value?.copy(
+            stepCount = accumulatedStepCount,
+            stepTrackingReliable = stepTrackingReliable,
+        )
+        stepTrackingReliable
+    }
+
+    suspend fun onStepDelta(delta: Long): Boolean = mutex.withLock {
+        if (delta <= 0L) return false
+        if (stateMachine?.state != WorkoutStatus.ACTIVE) return false
+        if (type == WorkoutType.BIKE || !stepTrackingReliable) return false
+        val current = accumulatedStepCount ?: return false
+        if (current > Long.MAX_VALUE - delta) return false
+
+        accumulatedStepCount = current + delta
+        _state.value = _state.value?.copy(
+            stepCount = accumulatedStepCount,
+            stepTrackingReliable = true,
+        )
+        true
     }
 
     suspend fun onHeartRateSample(bpm: Int, wallClockMillis: Long, elapsedRealtimeMillis: Long): Boolean = mutex.withLock {
@@ -328,6 +379,8 @@ class TrackingRepository(private val db: RunTrackDatabase) {
             movingMillis = metrics.movingMillis,
             distanceMeters = metrics.distanceMeters,
             averageSpeedMps = metrics.averageSpeedMps,
+            stepCount = accumulatedStepCount,
+            stepTrackingReliable = stepTrackingReliable,
             goalReachedAt = goalReachedAt,
             updatedAt = wallClockMillis,
         )
@@ -436,6 +489,8 @@ class TrackingRepository(private val db: RunTrackDatabase) {
             movingMillis = metrics.movingMillis,
             distanceMeters = metrics.distanceMeters,
             averageSpeedMps = metrics.averageSpeedMps,
+            stepCount = accumulatedStepCount,
+            stepTrackingReliable = stepTrackingReliable,
             updatedAt = wallClockMillis,
         )
         check(dao.updateWorkout(updated) == 1)
@@ -515,6 +570,8 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         lastLocationAtMillis = lastLocationAtMillis,
         gpsAvailable = gpsAvailable,
         lastLocationMonotonicMillis = lastLocationMonotonicMillis,
+        stepCount = stepCount,
+        stepTrackingReliable = stepTrackingReliable,
     )
 
     private fun WorkoutEntity.toGoal(): WorkoutGoal {
@@ -541,6 +598,8 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         movingStartedAtElapsedMillis = null
         routePointCount = 0
         segmentIndex = 0
+        accumulatedStepCount = null
+        stepTrackingReliable = false
         if (clearPublishedState) _state.value = null
     }
 }

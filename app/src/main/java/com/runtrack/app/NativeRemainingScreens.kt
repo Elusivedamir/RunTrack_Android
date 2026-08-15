@@ -5,7 +5,10 @@ import android.app.Activity
 import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.provider.Settings
+import android.os.Build
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -375,6 +378,11 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
     val gps by viewModel.gpsReadiness.collectAsStateWithLifecycle()
     val operation by viewModel.operation.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val stepSensorAvailable = remember(context) {
+        val manager = context.getSystemService(SensorManager::class.java)
+        manager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null ||
+            manager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) != null
+    }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         viewModel.onPermissionStateChanged()
     }
@@ -395,6 +403,7 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
     var startCountdownDeadlineElapsed by remember { mutableLongStateOf(0L) }
     var allowWeakGpsStart by remember { mutableStateOf(false) }
     var weakGpsWarning by remember { mutableStateOf(false) }
+    var pendingStepPermissionStart by remember { mutableStateOf<Boolean?>(null) }
 
     fun beginStartCountdown(allowWeakGps: Boolean) {
         val now = SystemClock.elapsedRealtime()
@@ -403,6 +412,32 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
         startCountdownDeadlineElapsed = now + START_COUNTDOWN_INITIAL_MILLIS
         startCountdownSeconds = 10
         startCountdownActive = true
+    }
+
+    val activityRecognitionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        val pendingAllowWeakGps = pendingStepPermissionStart
+        pendingStepPermissionStart = null
+        if (pendingAllowWeakGps != null) beginStartCountdown(pendingAllowWeakGps)
+    }
+
+    fun beginStartWithOptionalStepPermission(allowWeakGps: Boolean) {
+        val needsPermission =
+            type != WorkoutType.BIKE &&
+                stepSensorAvailable &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACTIVITY_RECOGNITION,
+                ) != PackageManager.PERMISSION_GRANTED
+
+        if (needsPermission) {
+            pendingStepPermissionStart = allowWeakGps
+            activityRecognitionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        } else {
+            beginStartCountdown(allowWeakGps)
+        }
     }
 
     DisposableEffect(viewModel) {
@@ -534,7 +569,7 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
                     } else if (!gps.ready) {
                         weakGpsWarning = true
                     } else {
-                        beginStartCountdown(allowWeakGps = false)
+                        beginStartWithOptionalStepPermission(allowWeakGps = false)
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -558,7 +593,7 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
                 TextButton(
                     onClick = {
                         weakGpsWarning = false
-                        beginStartCountdown(allowWeakGps = true)
+                        beginStartWithOptionalStepPermission(allowWeakGps = true)
                     }
                 ) {
                     Text("Начать всё равно")
@@ -922,6 +957,16 @@ private fun WorkoutDetailsScreen(viewModel: RunTrackViewModel, onNavigate: (Int)
     if (r == null) { MissingDataPage("Детали тренировки", onNavigate); return }
     val w = r.workout; val type = w.typeOrNull() ?: WorkoutType.RUN
     val metrics = WorkoutMath.metrics(w.distanceMeters, w.elapsedMillis, w.movingMillis)
+    val cadence = StepMetrics.cadenceStepsPerMinute(
+        w.stepCount,
+        w.movingMillis,
+        w.stepTrackingReliable,
+    )
+    val strideLengthMeters = StepMetrics.strideLengthMeters(
+        w.stepCount,
+        w.distanceMeters,
+        w.stepTrackingReliable,
+    )
     NativePage(title = "Детали тренировки", subtitle = w.resultSubtitle(), onBack = { onNavigate(5) }, onNavigate = onNavigate) {
         LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 14.dp)) {
             item { Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) { MetricBox("Дистанция", RunTrackFormatter.distance(w.distanceMeters, settings.units), Modifier.weight(1f), RtGreen); MetricBox("Время", RunTrackFormatter.duration(w.elapsedMillis), Modifier.weight(1f)) } }
@@ -930,8 +975,22 @@ private fun WorkoutDetailsScreen(viewModel: RunTrackViewModel, onNavigate: (Int)
             item { InfoRow(Icons.Outlined.FavoriteBorder, "Пульс", w.heartRateAverageBpm?.let { avg -> "$avg / ${w.heartRateMaxBpm ?: avg} уд/мин" } ?: "Нет данных", RtRed) }
             item { InfoRow(Icons.Outlined.LocalFireDepartment, "Калории", RunTrackFormatter.calories(w.caloriesEstimate), RtYellow) }
             item { InfoRow(Icons.Outlined.Terrain, "Высота", elevationPairText(w, settings.units), RtBlue) }
-            item { InfoRow(Icons.Outlined.DirectionsRun, "Каденс", "Нет данных", RtGreen) }
-            item { InfoRow(Icons.Outlined.Straighten, "Длина шага", "Нет данных", RtText2) }
+            item {
+                InfoRow(
+                    Icons.Outlined.DirectionsRun,
+                    "Каденс",
+                    RunTrackFormatter.cadence(cadence),
+                    RtGreen,
+                )
+            }
+            item {
+                InfoRow(
+                    Icons.Outlined.Straighten,
+                    "Длина шага",
+                    RunTrackFormatter.strideLength(strideLengthMeters, settings.units),
+                    RtText2,
+                )
+            }
             item { SecondaryAction("Экспорт тренировки", { onNavigate(19) }, Modifier.fillMaxWidth(), Icons.Outlined.Share) }
         }
     }

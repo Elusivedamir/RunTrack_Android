@@ -16,12 +16,17 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.runtrack.app.data.WorkoutWithRoute
 import com.runtrack.app.domain.*
 import com.runtrack.app.maps.RunTrackRouteMap
+import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
 private val Bg = Color(0xFF07131B)
@@ -64,8 +69,30 @@ fun NativeMainScreen(
     }
     val latest = visible.maxByOrNull { it.workout.startedAt }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var greeting by remember {
+        mutableStateOf(GreetingResolver.greetingFor(ZonedDateTime.now().toLocalTime()))
+    }
+    var greetingRefresh by remember { mutableIntStateOf(0) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) greetingRefresh += 1
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(greetingRefresh) {
+        while (true) {
+            val now = ZonedDateTime.now()
+            greeting = GreetingResolver.greetingFor(now.toLocalTime())
+            delay(GreetingResolver.millisUntilNextBoundary(now))
+        }
+    }
+
     Column(Modifier.fillMaxSize().background(Bg)) {
-        Header(onFilters = { showFilters = true }, onSettings = onSettings)
+        Header(greeting = greeting, onFilters = { showFilters = true }, onSettings = onSettings)
         RouteMap(
             relation = latest,
             layer = settings.mapLayer,
@@ -108,10 +135,10 @@ fun NativeMainScreen(
 }
 
 @Composable
-private fun Header(onFilters: () -> Unit, onSettings: () -> Unit) {
+private fun Header(greeting: String, onFilters: () -> Unit, onSettings: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 10.dp, top = 12.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text("Доброе утро!", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(greeting, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Text("Готов к новой тренировке?", color = Muted, fontSize = 12.sp)
         }
         Box(Modifier.size(38.dp).clickable(onClick = onFilters), contentAlignment = Alignment.Center) {

@@ -508,7 +508,13 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
         val best1k = recordPairs.mapNotNull { (id, _, value) -> value?.let { id to it } }.minByOrNull { it.second }
         val daily = withContext(Dispatchers.Default) {
             summaries.groupBy { Instant.ofEpochMilli(it.startedAtMillis).atZone(zone).toLocalDate().toEpochDay() }
-                .map { (day, items) -> DailyStatPoint(day, items.sumOf { it.distanceMeters }, items.sumOf { it.elapsedMillis }) }
+                .map { (day, items) ->
+                    DailyStatPoint(
+                        day,
+                        items.sumOf { it.distanceMeters },
+                        items.sumOf { StatisticsCalculator.displayElapsedMillis(it.elapsedMillis) },
+                    )
+                }
                 .sortedBy { it.epochDay }
         }
         return RunTrackStatsUiState(

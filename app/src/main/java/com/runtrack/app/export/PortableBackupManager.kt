@@ -232,6 +232,8 @@ class PortableBackupManager(
         put("averageSpeedMps", averageSpeedMps); put("caloriesEstimate", caloriesEstimate)
         heartRateAverageBpm?.let { put("heartRateAverageBpm", it) }; heartRateMaxBpm?.let { put("heartRateMaxBpm", it) }
         elevationGainMeters?.let { put("elevationGainMeters", it) }; elevationLossMeters?.let { put("elevationLossMeters", it) }
+        stepCount?.let { put("stepCount", it) }
+        put("stepTrackingReliable", stepTrackingReliable)
         title?.let { put("title", it) }; note?.let { put("note", it) }
         put("createdAt", createdAt); put("updatedAt", updatedAt)
     }
@@ -246,6 +248,14 @@ class PortableBackupManager(
         val moving = getLong("movingMillis").also { require(it in 0L..elapsed) }
         if (endedAt != null) require(endedAt >= startedAt) { "Некорректные границы времени тренировки" }
         val status = getString("status").also { require(it == WorkoutStatus.COMPLETED.name) }
+        val restoredStepCount =
+            if (has("stepCount") && !isNull("stepCount")) {
+                getLong("stepCount").takeIf { it >= 0L }
+            } else {
+                null
+            }
+        val restoredStepReliable =
+            optBoolean("stepTrackingReliable", false) && restoredStepCount != null
         return WorkoutEntity(
             id = id,
             sessionToken = getString("sessionToken").also { require(it.isNotBlank() && it.length <= 128) },
@@ -272,6 +282,8 @@ class PortableBackupManager(
             note = optString("note").takeIf { has("note") && it.length <= 4000 },
             createdAt = optLong("createdAt", startedAt),
             updatedAt = optLong("updatedAt", endedAt ?: startedAt),
+            stepCount = restoredStepCount,
+            stepTrackingReliable = restoredStepReliable,
         )
     }
 
@@ -429,7 +441,7 @@ class PortableBackupManager(
 
     companion object {
         private const val BACKUP_FORMAT = "RunTrackPortableBackup"
-        private const val BACKUP_VERSION = 3
+        private const val BACKUP_VERSION = 4
         private const val MAX_BACKUP_BYTES = 256L * 1024L * 1024L
     }
 }

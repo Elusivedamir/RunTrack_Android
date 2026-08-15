@@ -95,13 +95,16 @@ object StatisticsCalculator {
     fun aggregate(workouts: List<WorkoutSummary>): PeriodStats = PeriodStats(
         workouts = workouts.size,
         distanceMeters = workouts.sumOf { it.distanceMeters.coerceAtLeast(0.0) },
-        elapsedMillis = workouts.sumOf { it.elapsedMillis.coerceAtLeast(0) },
+        elapsedMillis = workouts.sumOf { displayElapsedMillis(it.elapsedMillis) },
         movingMillis = workouts.sumOf { it.movingMillis.coerceAtLeast(0) },
         calories = workouts.sumOf { it.calories.coerceAtLeast(0) },
         byTypeDistanceMeters = WorkoutType.entries.associateWith { type ->
             workouts.asSequence().filter { it.type == type }.sumOf { it.distanceMeters.coerceAtLeast(0.0) }
         },
     )
+
+    fun displayElapsedMillis(millis: Long): Long =
+        (millis.coerceAtLeast(0L) / 1_000L) * 1_000L
 
     fun percentChange(current: Double, previous: Double): Double? {
         if (!current.isFinite() || !previous.isFinite()) return null
