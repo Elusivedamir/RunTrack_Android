@@ -21,6 +21,7 @@ data class GpsReadiness(
     val hasFreshFix: Boolean,
     val accuracyMeters: Float?,
     val checkedAtElapsedRealtimeMillis: Long,
+    val fixAttempted: Boolean = false,
 ) {
     val ready: Boolean get() = finePermissionGranted && locationEnabled && hasFreshFix
 }
@@ -59,7 +60,12 @@ class GpsReadinessChecker(private val context: Context) {
             }
         }
         val now = SystemClock.elapsedRealtime()
-        if (location == null) return basic.copy(checkedAtElapsedRealtimeMillis = now)
+        if (location == null) {
+            return basic.copy(
+                checkedAtElapsedRealtimeMillis = now,
+                fixAttempted = true,
+            )
+        }
         val age = (now - location.elapsedRealtimeNanos / 1_000_000L).coerceAtLeast(0L)
         val accurate = location.hasAccuracy() && location.accuracy.isFinite() && location.accuracy in 0.1f..maxAccuracyMeters
         return GpsReadiness(
@@ -68,6 +74,7 @@ class GpsReadinessChecker(private val context: Context) {
             hasFreshFix = age <= FRESH_FIX_MAX_AGE_MS && accurate,
             accuracyMeters = location.accuracy.takeIf { location.hasAccuracy() },
             checkedAtElapsedRealtimeMillis = now,
+            fixAttempted = true,
         )
     }
 

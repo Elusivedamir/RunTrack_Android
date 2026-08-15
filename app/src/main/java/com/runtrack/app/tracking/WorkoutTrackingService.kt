@@ -22,7 +22,6 @@ class WorkoutTrackingService : Service() {
     private lateinit var fused: FusedLocationProviderClient
     private lateinit var repository: TrackingRepository
     private lateinit var weatherUpdateCoordinator: WeatherUpdateCoordinator
-    @Volatile private var autoPauseEnabled: Boolean = true
     @Volatile private var updatesRequested = false
     @Volatile private var foregroundStarted = false
     @Volatile private var heartRateConnected = false
@@ -38,7 +37,6 @@ class WorkoutTrackingService : Service() {
                     val accepted = repository.onLocation(
                         sample = sample,
                         elapsedRealtimeMillis = location.elapsedRealtimeNanos / 1_000_000L,
-                        autoPauseEnabled = autoPauseEnabled,
                     )
 
                     /*
@@ -76,11 +74,6 @@ class WorkoutTrackingService : Service() {
         repository = RunTrackRuntime.trackingRepository
         weatherUpdateCoordinator = RunTrackRuntime.weatherUpdateCoordinator
         createNotificationChannel()
-        scope.launch {
-            RunTrackRuntime.settingsRepository.settings.collectLatest { settings ->
-                autoPauseEnabled = settings.autoPauseEnabled
-            }
-        }
         scope.launch {
             repository.state.collectLatest { snapshot ->
                 if (foregroundStarted && snapshot != null) {
@@ -176,8 +169,6 @@ class WorkoutTrackingService : Service() {
     private fun TrackingSnapshot.notificationText(): String = when {
         status == com.runtrack.app.domain.WorkoutStatus.MANUAL_PAUSED ->
             if (goalReached) "Цель достигнута · тренировка на паузе" else "Тренировка на паузе"
-        status == com.runtrack.app.domain.WorkoutStatus.AUTO_PAUSED ->
-            if (goalReached) "Цель достигнута · автопауза" else "Автопауза · ждём движения"
         goalReached -> "Цель достигнута · запись продолжается"
         else -> "Запись тренировки активна"
     }

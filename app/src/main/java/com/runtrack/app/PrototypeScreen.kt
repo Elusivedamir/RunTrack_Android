@@ -108,7 +108,17 @@ fun RunTrackPrototypeApp(viewModel: RunTrackViewModel = viewModel()) {
                     onOpenWorkout = { id -> viewModel.selectWorkout(id); nav.navigate(Routes.result(id, "overview")) },
                 )
             }
-            composable(Routes.SETUP) { NativeRemainingScreen(1, viewModel, ::navigateIndex) }
+            composable(Routes.SETUP) {
+                NativeRemainingScreen(1, viewModel) { index ->
+                    if (index == 0) {
+                        if (!nav.popBackStack()) {
+                            nav.navigate(Routes.HOME) { launchSingleTop = true }
+                        }
+                    } else {
+                        navigateIndex(index)
+                    }
+                }
+            }
             composable(Routes.ACTIVE) { NativeRemainingScreen(2, viewModel, ::navigateIndex) }
             composable(Routes.PAUSED) { NativeRemainingScreen(3, viewModel, ::navigateIndex) }
             composable(Routes.FINISH) {

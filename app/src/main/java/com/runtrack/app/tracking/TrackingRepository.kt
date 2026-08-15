@@ -38,7 +38,6 @@ class TrackingRepository(private val db: RunTrackDatabase) {
     val state: StateFlow<TrackingSnapshot?> = _state.asStateFlow()
 
     private var filter: GpsPointFilter? = null
-    private var autoPauseController: AutoPauseController? = null
     private var stateMachine: WorkoutStateMachine? = null
     private var activeWorkoutId: String? = null
     private var type: WorkoutType? = null
@@ -97,7 +96,6 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         this.type = type
         stateMachine = sm
         filter = GpsPointFilter(GpsFilterPolicy.forType(type))
-        autoPauseController = AutoPauseController(AutoPausePolicy.forType(type))
         lastAccepted = null
         accumulatedDistanceMeters = 0.0
         accumulatedElapsedMillis = 0L
@@ -131,7 +129,6 @@ class TrackingRepository(private val db: RunTrackDatabase) {
                 WorkoutStatus.ACTIVE,
                 WorkoutStatus.PREPARING,
                 WorkoutStatus.MANUAL_PAUSED,
-                WorkoutStatus.AUTO_PAUSED,
             ) -> WorkoutStatus.RECOVERY_REQUIRED
             else -> persistedStatus
         }
@@ -145,9 +142,6 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         type = workoutType
         stateMachine = WorkoutStateMachine(restoredStatus)
         filter = GpsPointFilter(GpsFilterPolicy.forType(workoutType))
-        autoPauseController = AutoPauseController(AutoPausePolicy.forType(workoutType)).apply {
-            restoreAutoPaused(restoredStatus == WorkoutStatus.AUTO_PAUSED)
-        }
         accumulatedDistanceMeters = recomputeDistance(relation.route)
         accumulatedElapsedMillis = effective.elapsedMillis.coerceAtLeast(0L)
         elapsedStartedAtElapsedMillis = null
@@ -176,7 +170,6 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         elapsedStartedAtElapsedMillis = null
         if (sm.state == WorkoutStatus.ACTIVE) closeMovingSegment(elapsedRealtimeMillis)
         check(sm.transition(WorkoutStatus.RECOVERY_REQUIRED))
-        autoPauseController?.reset()
         filter?.reset()
         lastAccepted = null
         true
@@ -193,12 +186,11 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         elapsedStartedAtElapsedMillis = elapsedRealtimeMillis
         movingStartedAtElapsedMillis = elapsedRealtimeMillis
         filter?.reset()
-        autoPauseController?.reset()
         lastAccepted = null
         true
     }
 
-    suspend fun onLocation(sample: LocationSample, elapsedRealtimeMillis: Long, autoPauseEnabled: Boolean): Boolean = mutex.withLock {
+    suspend fun onLocation(sample: LocationSample, elapsedRealtimeMillis: Long): Boolean = mutex.withLock {
         val id = activeWorkoutId ?: return false
         val sm = stateMachine ?: return false
         val workoutType = type ?: return false
@@ -212,43 +204,6 @@ class TrackingRepository(private val db: RunTrackDatabase) {
 
         if (sm.state == WorkoutStatus.MANUAL_PAUSED || sm.state == WorkoutStatus.FINISHING || sm.state == WorkoutStatus.RECOVERY_REQUIRED) {
             return false
-        }
-
-        // Turning auto-pause off while currently auto-paused must resume deterministically.
-        if (!autoPauseEnabled && sm.state == WorkoutStatus.AUTO_PAUSED && sm.canTransition(WorkoutStatus.ACTIVE)) {
-            persistStatus(id, WorkoutStatus.ACTIVE, sample.timestampMillis, elapsedRealtimeMillis)
-            check(sm.transition(WorkoutStatus.ACTIVE))
-            segmentIndex += 1
-            movingStartedAtElapsedMillis = elapsedRealtimeMillis
-            autoPauseController?.reset()
-            filter?.reset()
-            lastAccepted = null
-        }
-
-        if (autoPauseEnabled && (sm.state == WorkoutStatus.ACTIVE || sm.state == WorkoutStatus.AUTO_PAUSED)) {
-            when (autoPauseController?.update(monotonic, sample.speedMps?.toDouble(), sample.accuracyMeters, manualPaused = false)) {
-                AutoPauseEvent.Pause -> {
-                    if (sm.state == WorkoutStatus.ACTIVE && sm.canTransition(WorkoutStatus.AUTO_PAUSED)) {
-                        persistStatus(id, WorkoutStatus.AUTO_PAUSED, sample.timestampMillis, elapsedRealtimeMillis)
-                        closeMovingSegment(elapsedRealtimeMillis)
-                        check(sm.transition(WorkoutStatus.AUTO_PAUSED))
-                        filter?.reset()
-                        lastAccepted = null
-                    }
-                    return false
-                }
-                AutoPauseEvent.Resume -> {
-                    if (sm.state == WorkoutStatus.AUTO_PAUSED && sm.canTransition(WorkoutStatus.ACTIVE)) {
-                        persistStatus(id, WorkoutStatus.ACTIVE, sample.timestampMillis, elapsedRealtimeMillis)
-                        check(sm.transition(WorkoutStatus.ACTIVE))
-                        segmentIndex += 1
-                        movingStartedAtElapsedMillis = elapsedRealtimeMillis
-                        filter?.reset()
-                        lastAccepted = null
-                    }
-                }
-                AutoPauseEvent.None, null -> Unit
-            }
         }
 
         if (sm.state != WorkoutStatus.ACTIVE) return false
@@ -335,7 +290,6 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         persistStatus(id, WorkoutStatus.MANUAL_PAUSED, wallClockMillis, elapsedRealtimeMillis)
         if (sm.state == WorkoutStatus.ACTIVE) closeMovingSegment(elapsedRealtimeMillis)
         check(sm.transition(WorkoutStatus.MANUAL_PAUSED))
-        autoPauseController?.reset()
         filter?.reset()
         lastAccepted = null
         true
@@ -344,14 +298,13 @@ class TrackingRepository(private val db: RunTrackDatabase) {
     suspend fun resume(wallClockMillis: Long, elapsedRealtimeMillis: Long): Boolean = mutex.withLock {
         val id = activeWorkoutId ?: return false
         val sm = stateMachine ?: return false
-        if ((sm.state != WorkoutStatus.MANUAL_PAUSED && sm.state != WorkoutStatus.AUTO_PAUSED) || !sm.canTransition(WorkoutStatus.ACTIVE)) return false
+        if (sm.state != WorkoutStatus.MANUAL_PAUSED || !sm.canTransition(WorkoutStatus.ACTIVE)) return false
 
         persistStatus(id, WorkoutStatus.ACTIVE, wallClockMillis, elapsedRealtimeMillis)
         check(sm.transition(WorkoutStatus.ACTIVE))
         segmentIndex += 1
         movingStartedAtElapsedMillis = elapsedRealtimeMillis
         filter?.reset()
-        autoPauseController?.reset()
         lastAccepted = null
         true
     }
@@ -384,7 +337,6 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         elapsedStartedAtElapsedMillis = null
         if (sm.state == WorkoutStatus.ACTIVE) closeMovingSegment(elapsedRealtimeMillis)
         check(sm.transition(WorkoutStatus.FINISHING))
-        autoPauseController?.reset()
         filter?.reset()
         lastAccepted = null
         _state.value = finishing.toSnapshot(requireNotNull(type), routePointCount, _state.value?.lastAccuracyMeters, _state.value?.lastLocationAtMillis)
@@ -448,7 +400,7 @@ class TrackingRepository(private val db: RunTrackDatabase) {
     suspend fun snapshot(nowElapsedRealtimeMillis: Long): TrackingSnapshot? = mutex.withLock {
         val base = _state.value ?: return null
         val liveElapsed = when (base.status) {
-            WorkoutStatus.ACTIVE, WorkoutStatus.MANUAL_PAUSED, WorkoutStatus.AUTO_PAUSED -> currentElapsedMillis(nowElapsedRealtimeMillis)
+            WorkoutStatus.ACTIVE, WorkoutStatus.MANUAL_PAUSED -> currentElapsedMillis(nowElapsedRealtimeMillis)
             else -> base.elapsedMillis
         }
         val liveMoving = if (base.status == WorkoutStatus.ACTIVE) currentMovingMillis(nowElapsedRealtimeMillis) else base.movingMillis
@@ -466,7 +418,7 @@ class TrackingRepository(private val db: RunTrackDatabase) {
     suspend fun checkpoint(wallClockMillis: Long, elapsedRealtimeMillis: Long): Boolean = mutex.withLock {
         val id = activeWorkoutId ?: return false
         val status = stateMachine?.state ?: return false
-        if (status !in setOf(WorkoutStatus.ACTIVE, WorkoutStatus.MANUAL_PAUSED, WorkoutStatus.AUTO_PAUSED)) return false
+        if (status !in setOf(WorkoutStatus.ACTIVE, WorkoutStatus.MANUAL_PAUSED)) return false
         persistStatus(id, status, wallClockMillis, elapsedRealtimeMillis)
         true
     }
@@ -581,7 +533,6 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         type = null
         stateMachine = null
         filter = null
-        autoPauseController = null
         lastAccepted = null
         accumulatedDistanceMeters = 0.0
         accumulatedElapsedMillis = 0L

@@ -118,6 +118,7 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
     val healthConnectState: StateFlow<HealthConnectUiState> = _healthConnectState.asStateFlow()
     val healthConnectPermissions: Set<String> = HealthConnectManager.REQUIRED_PERMISSIONS
     private var ticker: Job? = null
+    private var gpsReadinessMonitor: Job? = null
 
     init {
         viewModelScope.launch {
@@ -160,19 +161,54 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
 
     fun refreshGpsReadiness() {
         viewModelScope.launch {
-            _gpsReadiness.value = gpsChecker.checkCurrentFix(GpsFilterPolicy.forType(_workoutType.value).maxAccuracyMeters)
+            _gpsReadiness.value = gpsChecker.checkCurrentFix(
+                GpsFilterPolicy.forType(_workoutType.value).maxAccuracyMeters
+            )
         }
+    }
+
+    fun startGpsReadinessMonitoring() {
+        gpsReadinessMonitor?.cancel()
+        gpsReadinessMonitor = viewModelScope.launch {
+            while (true) {
+                val basic = gpsChecker.basicStatus()
+                if (!basic.finePermissionGranted || !basic.locationEnabled) {
+                    _gpsReadiness.value = basic
+                    delay(2_000L)
+                    continue
+                }
+
+                val checked = gpsChecker.checkCurrentFix(
+                    GpsFilterPolicy.forType(_workoutType.value).maxAccuracyMeters
+                )
+                _gpsReadiness.value = checked
+                delay(if (checked.ready) 10_000L else 2_000L)
+            }
+        }
+    }
+
+    fun stopGpsReadinessMonitoring() {
+        gpsReadinessMonitor?.cancel()
+        gpsReadinessMonitor = null
     }
 
     fun onPermissionStateChanged() {
         _gpsReadiness.value = gpsChecker.basicStatus()
-        if (_gpsReadiness.value.finePermissionGranted && _gpsReadiness.value.locationEnabled) refreshGpsReadiness()
     }
 
     fun startWorkout(onStarted: (String) -> Unit = {}) = launchExclusive("start") {
         val goal = _goal.value
         if (!goal.isValid()) error("Некорректная цель тренировки")
-        val gps = gpsChecker.checkCurrentFix(GpsFilterPolicy.forType(_workoutType.value).maxAccuracyMeters)
+        val cachedGps = _gpsReadiness.value
+        val nowElapsedForGps = SystemClock.elapsedRealtime()
+        val cachedFixIsFresh =
+            cachedGps.ready &&
+                (nowElapsedForGps - cachedGps.checkedAtElapsedRealtimeMillis).coerceAtLeast(0L) <= 15_000L
+        val gps = if (cachedFixIsFresh) {
+            cachedGps
+        } else {
+            gpsChecker.checkCurrentFix(GpsFilterPolicy.forType(_workoutType.value).maxAccuracyMeters)
+        }
         _gpsReadiness.value = gps
         check(gps.ready) { gpsFailureMessage(gps) }
 
@@ -333,7 +369,6 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
     fun clearOperationError() { if (_operation.value is UiOperationState.Error) _operation.value = UiOperationState.Idle }
 
     fun setNotificationsEnabled(value: Boolean) = viewModelScope.launch { settingsRepo.setNotificationsEnabled(value) }
-    fun setAutoPauseEnabled(value: Boolean) = viewModelScope.launch { settingsRepo.setAutoPauseEnabled(value) }
     fun setKeepScreenOn(value: Boolean) = viewModelScope.launch { settingsRepo.setKeepScreenOn(value) }
     fun setUnits(value: UnitSystem) = viewModelScope.launch { settingsRepo.setUnits(value) }
     fun setMapLayer(value: MapLayer) = viewModelScope.launch { settingsRepo.setMapLayer(value) }

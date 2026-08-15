@@ -3,7 +3,7 @@ package com.runtrack.app.domain
 import kotlin.math.*
 
 enum class WorkoutType { RUN, WALK, BIKE }
-enum class WorkoutStatus { IDLE, PREPARING, ACTIVE, MANUAL_PAUSED, AUTO_PAUSED, FINISHING, COMPLETED, RECOVERY_REQUIRED, FAILED }
+enum class WorkoutStatus { IDLE, PREPARING, ACTIVE, MANUAL_PAUSED, FINISHING, COMPLETED, RECOVERY_REQUIRED, FAILED }
 enum class GoalKind { NONE, DISTANCE, DURATION }
 enum class UnitSystem { METRIC, IMPERIAL }
 enum class MapLayer { STANDARD, TERRAIN }
@@ -175,79 +175,6 @@ object WorkoutMath {
     }
 }
 
-data class AutoPausePolicy(
-    val pauseBelowMps: Double,
-    val resumeAboveMps: Double,
-    val pauseAfterMillis: Long,
-    val resumeAfterMillis: Long,
-    val maxAccuracyMeters: Float,
-    val maxPlausibleSpeedMps: Double,
-) {
-    companion object {
-        fun forType(type: WorkoutType): AutoPausePolicy = when (type) {
-            WorkoutType.RUN -> AutoPausePolicy(0.55, 1.05, 8_000, 3_000, 35f, 12.0)
-            WorkoutType.WALK -> AutoPausePolicy(0.30, 0.70, 10_000, 3_500, 40f, 6.5)
-            WorkoutType.BIKE -> AutoPausePolicy(1.10, 2.00, 10_000, 3_000, 45f, 30.0)
-        }
-    }
-}
-
-sealed interface AutoPauseEvent {
-    data object None : AutoPauseEvent
-    data object Pause : AutoPauseEvent
-    data object Resume : AutoPauseEvent
-}
-
-class AutoPauseController(private val policy: AutoPausePolicy) {
-    private var belowSince: Long? = null
-    private var aboveSince: Long? = null
-    private var autoPaused = false
-
-    fun reset() { belowSince = null; aboveSince = null; autoPaused = false }
-    fun restoreAutoPaused(value: Boolean) { belowSince = null; aboveSince = null; autoPaused = value }
-
-    fun update(monotonicMillis: Long, speedMps: Double?, accuracyMeters: Float, manualPaused: Boolean): AutoPauseEvent {
-        if (manualPaused) {
-            belowSince = null
-            aboveSince = null
-            return AutoPauseEvent.None
-        }
-        if (!accuracyMeters.isFinite() || accuracyMeters > policy.maxAccuracyMeters || speedMps == null || !speedMps.isFinite() || speedMps < 0 || speedMps > policy.maxPlausibleSpeedMps) {
-            belowSince = null
-            aboveSince = null
-            return AutoPauseEvent.None
-        }
-
-        if (!autoPaused) {
-            aboveSince = null
-            if (speedMps <= policy.pauseBelowMps) {
-                val start = belowSince ?: monotonicMillis.also { belowSince = it }
-                if (monotonicMillis - start >= policy.pauseAfterMillis) {
-                    autoPaused = true
-                    belowSince = null
-                    return AutoPauseEvent.Pause
-                }
-            } else {
-                belowSince = null
-            }
-            return AutoPauseEvent.None
-        }
-
-        belowSince = null
-        if (speedMps >= policy.resumeAboveMps) {
-            val start = aboveSince ?: monotonicMillis.also { aboveSince = it }
-            if (monotonicMillis - start >= policy.resumeAfterMillis) {
-                autoPaused = false
-                aboveSince = null
-                return AutoPauseEvent.Resume
-            }
-        } else {
-            aboveSince = null
-        }
-        return AutoPauseEvent.None
-    }
-}
-
 class WorkoutStateMachine(initial: WorkoutStatus = WorkoutStatus.IDLE) {
     var state: WorkoutStatus = initial
         private set
@@ -257,9 +184,8 @@ class WorkoutStateMachine(initial: WorkoutStatus = WorkoutStatus.IDLE) {
         val allowed = when (state) {
             WorkoutStatus.IDLE -> setOf(WorkoutStatus.PREPARING)
             WorkoutStatus.PREPARING -> setOf(WorkoutStatus.ACTIVE, WorkoutStatus.FAILED, WorkoutStatus.RECOVERY_REQUIRED)
-            WorkoutStatus.ACTIVE -> setOf(WorkoutStatus.MANUAL_PAUSED, WorkoutStatus.AUTO_PAUSED, WorkoutStatus.FINISHING, WorkoutStatus.RECOVERY_REQUIRED)
+            WorkoutStatus.ACTIVE -> setOf(WorkoutStatus.MANUAL_PAUSED, WorkoutStatus.FINISHING, WorkoutStatus.RECOVERY_REQUIRED)
             WorkoutStatus.MANUAL_PAUSED -> setOf(WorkoutStatus.ACTIVE, WorkoutStatus.FINISHING, WorkoutStatus.RECOVERY_REQUIRED)
-            WorkoutStatus.AUTO_PAUSED -> setOf(WorkoutStatus.ACTIVE, WorkoutStatus.MANUAL_PAUSED, WorkoutStatus.FINISHING, WorkoutStatus.RECOVERY_REQUIRED)
             WorkoutStatus.FINISHING -> setOf(WorkoutStatus.COMPLETED, WorkoutStatus.RECOVERY_REQUIRED, WorkoutStatus.FAILED)
             WorkoutStatus.RECOVERY_REQUIRED -> setOf(WorkoutStatus.ACTIVE, WorkoutStatus.MANUAL_PAUSED, WorkoutStatus.FINISHING, WorkoutStatus.FAILED)
             WorkoutStatus.COMPLETED, WorkoutStatus.FAILED -> emptySet()

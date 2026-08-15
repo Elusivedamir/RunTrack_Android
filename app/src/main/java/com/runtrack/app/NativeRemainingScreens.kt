@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.Settings
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -15,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -35,6 +37,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -53,6 +56,7 @@ import com.runtrack.app.maps.RunTrackRouteMap
 import com.runtrack.app.tracking.BleHeartRateState
 import com.runtrack.app.weather.WeatherFormatter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.*
@@ -70,6 +74,21 @@ private val RtText2 = Color(0xFFB8C2C9)
 private val RtYellow = Color(0xFFF4B400)
 private val RtBlue = Color(0xFF42A5F5)
 private val RtRed = Color(0xFFFF6B6B)
+
+private fun formatGoalDistance(meters: Double): String =
+    String.format(Locale.getDefault(), "%.2f км", meters / 1000.0)
+
+private fun formatGoalDuration(millis: Long): String {
+    val totalSeconds = (millis / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        String.format(Locale.getDefault(), "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.getDefault(), "%d:%02d", minutes, seconds)
+    }
+}
 
 @Composable
 fun NativeRemainingScreen(
@@ -357,21 +376,74 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         viewModel.onPermissionStateChanged()
     }
+
+    var distanceMetersDraft by rememberSaveable {
+        mutableStateOf(goal.distanceMeters?.takeIf { it.isFinite() && it > 0.0 } ?: 5_000.0)
+    }
+    var durationMillisDraft by rememberSaveable {
+        mutableStateOf(goal.durationMillis?.takeIf { it > 0L } ?: 45L * 60_000L)
+    }
+    var goalEditor by rememberSaveable { mutableStateOf<String?>(null) }
+    var goalDraft by rememberSaveable { mutableStateOf("") }
+    var goalError by rememberSaveable { mutableStateOf<String?>(null) }
+
+    var startCountdownActive by remember { mutableStateOf(false) }
+    var startCountdownSeconds by remember { mutableIntStateOf(0) }
+    var startCountdownStartedAtElapsed by remember { mutableLongStateOf(0L) }
+    var startCountdownDeadlineElapsed by remember { mutableLongStateOf(0L) }
+
+    DisposableEffect(viewModel) {
+        viewModel.startGpsReadinessMonitoring()
+        onDispose { viewModel.stopGpsReadinessMonitoring() }
+    }
     LaunchedEffect(type) { viewModel.onPermissionStateChanged() }
 
     val gpsTitle = when {
         !gps.finePermissionGranted -> "Нужно разрешение GPS"
         !gps.locationEnabled -> "Геолокация выключена"
         gps.ready -> "GPS готов"
+        gps.fixAttempted && gps.accuracyMeters != null -> "GPS неточен"
+        gps.fixAttempted -> "GPS-сигнал не найден"
         else -> "Поиск GPS…"
     }
     val gpsSubtitle = when {
         gps.ready && gps.accuracyMeters != null -> "Точность ±${gps.accuracyMeters!!.toInt()} м"
         !gps.finePermissionGranted -> "Разрешите точную геолокацию"
         !gps.locationEnabled -> "Включите Location в настройках Android"
+        gps.fixAttempted && gps.accuracyMeters != null ->
+            "Точность ±${gps.accuracyMeters!!.toInt()} м · продолжаем поиск"
+        gps.fixAttempted -> "Нет свежей точки · продолжаем поиск автоматически"
         else -> "Получаем свежую точку позиции"
     }
     val busy = operation is UiOperationState.Running
+
+    LaunchedEffect(startCountdownActive) {
+        if (!startCountdownActive) return@LaunchedEffect
+
+        while (startCountdownActive) {
+            val now = SystemClock.elapsedRealtime()
+            val remainingMillis = startCountdownDeadlineElapsed - now
+
+            if (remainingMillis <= 0L) {
+                startCountdownSeconds = 0
+                startCountdownActive = false
+                viewModel.startWorkout { onNavigate(2) }
+                break
+            }
+
+            startCountdownSeconds =
+                ((remainingMillis + 999L) / 1_000L).toInt().coerceIn(1, 300)
+            delay(100L)
+        }
+    }
+
+    val countdownLabel = if (startCountdownActive) {
+        val minutes = startCountdownSeconds / 60
+        val seconds = startCountdownSeconds % 60
+        "Старт через %02d:%02d · +5 сек".format(minutes, seconds)
+    } else {
+        "Начать тренировку"
+    }
 
     NativePage(title = "Новая тренировка", subtitle = "Настрой параметры перед стартом", onBack = { onNavigate(0) }, onNavigate = onNavigate) {
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
@@ -385,9 +457,27 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
             Spacer(Modifier.height(18.dp)); SectionTitle("Цель"); Spacer(Modifier.height(9.dp))
             GoalChoice("Без цели", "Свободная тренировка", goal.kind == GoalKind.NONE) { viewModel.clearGoal() }
             Spacer(Modifier.height(8.dp))
-            GoalChoice("5,00 км", "Дистанция", goal.kind == GoalKind.DISTANCE) { viewModel.setGoal(WorkoutGoal(GoalKind.DISTANCE, distanceMeters = 5000.0)) }
+            GoalChoice(
+                formatGoalDistance(distanceMetersDraft),
+                "Дистанция",
+                goal.kind == GoalKind.DISTANCE,
+            ) {
+                goalDraft = String.format(Locale.US, "%.2f", distanceMetersDraft / 1000.0)
+                    .trimEnd('0')
+                    .trimEnd('.')
+                goalError = null
+                goalEditor = "distance"
+            }
             Spacer(Modifier.height(8.dp))
-            GoalChoice("45:00", "Время", goal.kind == GoalKind.DURATION) { viewModel.setGoal(WorkoutGoal(GoalKind.DURATION, durationMillis = 45 * 60_000L)) }
+            GoalChoice(
+                formatGoalDuration(durationMillisDraft),
+                "Время",
+                goal.kind == GoalKind.DURATION,
+            ) {
+                goalDraft = (durationMillisDraft / 60_000L).coerceAtLeast(1L).toString()
+                goalError = null
+                goalEditor = "duration"
+            }
             Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth().background(RtSurface, RoundedCornerShape(13.dp)).clickable { viewModel.refreshGpsReadiness() }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(38.dp).background((if (gps.ready) RtGreen else RtYellow).copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
@@ -406,17 +496,129 @@ private fun WorkoutSetupScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -
             }
             Spacer(Modifier.weight(1f))
             PrimaryAction(
-                text = "Начать тренировку", icon = Icons.Outlined.PlayArrow, loading = busy,
+                text = countdownLabel,
+                icon = if (startCountdownActive) Icons.Outlined.Timer else Icons.Outlined.PlayArrow,
+                loading = busy,
                 onClick = {
-                    if (!gps.finePermissionGranted) permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                    else viewModel.startWorkout { onNavigate(2) }
+                    if (startCountdownActive) {
+                        val maxDeadline =
+                            startCountdownStartedAtElapsed + START_COUNTDOWN_MAX_MILLIS
+                        startCountdownDeadlineElapsed =
+                            (startCountdownDeadlineElapsed + START_COUNTDOWN_INCREMENT_MILLIS)
+                                .coerceAtMost(maxDeadline)
+
+                        val remainingMillis =
+                            (startCountdownDeadlineElapsed - SystemClock.elapsedRealtime())
+                                .coerceAtLeast(0L)
+                        startCountdownSeconds =
+                            ((remainingMillis + 999L) / 1_000L).toInt().coerceIn(0, 300)
+                    } else if (!gps.finePermissionGranted) {
+                        permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                    } else if (!gps.locationEnabled || !gps.ready) {
+                        viewModel.refreshGpsReadiness()
+                    } else {
+                        val now = SystemClock.elapsedRealtime()
+                        startCountdownStartedAtElapsed = now
+                        startCountdownDeadlineElapsed =
+                            now + START_COUNTDOWN_INITIAL_MILLIS
+                        startCountdownSeconds = 10
+                        startCountdownActive = true
+                    }
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(14.dp))
         }
     }
+
+    if (goalEditor != null) {
+        val editingDistance = goalEditor == "distance"
+        AlertDialog(
+            onDismissRequest = {
+                goalEditor = null
+                goalError = null
+            },
+            title = {
+                Text(if (editingDistance) "Цель по дистанции" else "Цель по времени")
+            },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = goalDraft,
+                        onValueChange = {
+                            goalDraft = it
+                            goalError = null
+                        },
+                        label = { Text(if (editingDistance) "Километры" else "Минуты") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = if (editingDistance) KeyboardType.Decimal else KeyboardType.Number,
+                        ),
+                    )
+                    goalError?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(it, color = RtRed, fontSize = 10.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (editingDistance) {
+                        val km = goalDraft.trim().replace(',', '.').toDoubleOrNull()
+                        if (km == null || !km.isFinite() || km <= 0.0) {
+                            goalError = "Введите дистанцию больше 0 км"
+                        } else {
+                            val meters = km * 1000.0
+                            if (!meters.isFinite()) {
+                                goalError = "Слишком большое значение дистанции"
+                            } else {
+                                distanceMetersDraft = meters
+                                viewModel.setGoal(
+                                    WorkoutGoal(
+                                        kind = GoalKind.DISTANCE,
+                                        distanceMeters = meters,
+                                    )
+                                )
+                                goalEditor = null
+                                goalError = null
+                            }
+                        }
+                    } else {
+                        val minutes = goalDraft.trim().toLongOrNull()
+                        if (minutes == null || minutes <= 0L || minutes > Long.MAX_VALUE / 60_000L) {
+                            goalError = "Введите целое число минут больше 0"
+                        } else {
+                            val millis = minutes * 60_000L
+                            durationMillisDraft = millis
+                            viewModel.setGoal(
+                                WorkoutGoal(
+                                    kind = GoalKind.DURATION,
+                                    durationMillis = millis,
+                                )
+                            )
+                            goalEditor = null
+                            goalError = null
+                        }
+                    }
+                }) {
+                    Text("Сохранить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    goalEditor = null
+                    goalError = null
+                }) {
+                    Text("Отмена")
+                }
+            },
+        )
+    }
 }
+
+private const val START_COUNTDOWN_INITIAL_MILLIS = 10_000L
+private const val START_COUNTDOWN_INCREMENT_MILLIS = 5_000L
+private const val START_COUNTDOWN_MAX_MILLIS = 5L * 60_000L
 
 @Composable
 private fun ActivityChoice(
@@ -489,7 +691,7 @@ private fun ActiveWorkoutScreen(viewModel: RunTrackViewModel, onNavigate: (Int) 
     val calories = current?.let { WorkoutMath.estimatedCalories(type, it.movingMillis, it.distanceMeters, settings.weightKg) } ?: 0
     val weather = relation?.weatherSnapshots?.maxByOrNull { it.capturedAt }
     val performance = if (type == WorkoutType.BIKE) RunTrackFormatter.speed(metrics?.averageSpeedMps ?: 0.0, settings.units) else RunTrackFormatter.pace(metrics?.paceSecondsPerKm, settings.units)
-    val workoutSubtitle = if (current?.status == WorkoutStatus.AUTO_PAUSED) "Автопауза · ждём движения" else "Тренировка идёт"
+    val workoutSubtitle = "Тренировка идёт"
     NativePage(title = workoutTypeTitle(type), subtitle = workoutSubtitle, onNavigate = onNavigate) {
         Column(Modifier.weight(1f).padding(horizontal = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             LiveRouteMap(routeSegments, settings.mapLayer, { viewModel.setMapLayer(settings.mapLayer.toggle()) }, Modifier.fillMaxWidth().height(245.dp))
@@ -1129,7 +1331,6 @@ private fun SettingsScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -> Un
     NativePage(title = "Настройки", onBack = { onNavigate(14) }, bottomNavSelected = 3, onNavigate = onNavigate) {
         LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 14.dp)) {
             item { SettingSwitch(Icons.Outlined.Notifications, "Уведомления", "Необязательные итоги тренировок", settings.notificationsEnabled, ::setOptionalNotifications) }
-            item { SettingSwitch(Icons.Outlined.Pause, "Автопауза", "При устойчивой остановке движения", settings.autoPauseEnabled, viewModel::setAutoPauseEnabled) }
             item { SettingSwitch(Icons.Outlined.Visibility, "Не выключать экран", "Только во время активной тренировки", settings.keepScreenOn, viewModel::setKeepScreenOn) }
             item { InfoRow(Icons.Outlined.Straighten, "Единицы измерения", if (settings.units == UnitSystem.METRIC) "Километры · кг · °C" else "Мили · lb · °F", RtBlue) { unitsDialog = true } }
             item { InfoRow(Icons.Outlined.Language, "Язык", "Русский · системная локаль", RtText2) { openAppLanguageSettings(context) } }

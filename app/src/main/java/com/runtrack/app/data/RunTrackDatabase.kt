@@ -201,11 +201,11 @@ interface WorkoutDao {
     @Query("SELECT * FROM workouts WHERE id = :id LIMIT 1")
     fun observeWorkoutWithRoute(id: String): Flow<WorkoutWithRoute?>
 
-    @Query("SELECT * FROM workouts WHERE status IN ('ACTIVE','MANUAL_PAUSED','AUTO_PAUSED','PREPARING','FINISHING','RECOVERY_REQUIRED') ORDER BY startedAt DESC LIMIT 1")
+    @Query("SELECT * FROM workouts WHERE status IN ('ACTIVE','MANUAL_PAUSED','PREPARING','FINISHING','RECOVERY_REQUIRED') ORDER BY startedAt DESC LIMIT 1")
     suspend fun getRecoverableWorkout(): WorkoutEntity?
 
     @Transaction
-    @Query("SELECT * FROM workouts WHERE status IN ('ACTIVE','MANUAL_PAUSED','AUTO_PAUSED','PREPARING','FINISHING','RECOVERY_REQUIRED') ORDER BY startedAt DESC LIMIT 1")
+    @Query("SELECT * FROM workouts WHERE status IN ('ACTIVE','MANUAL_PAUSED','PREPARING','FINISHING','RECOVERY_REQUIRED') ORDER BY startedAt DESC LIMIT 1")
     suspend fun getRecoverableWorkoutWithRoute(): WorkoutWithRoute?
 
     @Query("SELECT * FROM workouts WHERE status = 'COMPLETED' ORDER BY startedAt DESC")
@@ -250,7 +250,7 @@ interface WorkoutDao {
         HeartRateSampleEntity::class,
         WeatherSnapshotEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class RunTrackDatabase : RoomDatabase() {
@@ -293,6 +293,17 @@ abstract class RunTrackDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Auto-pause was removed. A legacy automatically-paused active
+                // workout must require an explicit user recovery decision.
+                db.execSQL(
+                    "UPDATE workouts SET status = 'RECOVERY_REQUIRED' " +
+                        "WHERE status = 'AUTO_PAUSED'"
+                )
+            }
+        }
+
         @Volatile private var INSTANCE: RunTrackDatabase? = null
 
         fun get(context: Context): RunTrackDatabase = INSTANCE ?: synchronized(this) {
@@ -301,7 +312,7 @@ abstract class RunTrackDatabase : RoomDatabase() {
                 RunTrackDatabase::class.java,
                 "runtrack.db",
             )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
                 .also { INSTANCE = it }
         }

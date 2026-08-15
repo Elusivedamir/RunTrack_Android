@@ -36,27 +36,12 @@ class RunTrackDomainTest {
         assertTrue(filter.validate(LocationSample(61_000, 53.5200, 13.4050, 5f)) is GpsValidation.Rejected)
     }
 
-    @Test fun autoPauseUsesDebounceAndManualPriority() {
-        val controller = AutoPauseController(AutoPausePolicy.forType(WorkoutType.RUN))
-        assertEquals(AutoPauseEvent.None, controller.update(0, 0.1, 5f, false))
-        assertEquals(AutoPauseEvent.None, controller.update(7_999, 0.1, 5f, false))
-        assertEquals(AutoPauseEvent.Pause, controller.update(8_000, 0.1, 5f, false))
-        assertEquals(AutoPauseEvent.None, controller.update(9_000, 1.5, 5f, false))
-        assertEquals(AutoPauseEvent.Resume, controller.update(12_000, 1.5, 5f, false))
-
-        val manual = AutoPauseController(AutoPausePolicy.forType(WorkoutType.RUN))
-        manual.update(0, 0.0, 5f, false)
-        assertEquals(AutoPauseEvent.None, manual.update(20_000, 0.0, 5f, true))
-    }
-
-    @Test fun autoPauseIgnoresImplausibleProviderSpeed() {
-        val controller = AutoPauseController(AutoPausePolicy.forType(WorkoutType.RUN))
-        controller.update(0, 0.0, 5f, false)
-        assertEquals(AutoPauseEvent.Pause, controller.update(8_000, 0.0, 5f, false))
-        assertEquals(AutoPauseEvent.None, controller.update(9_000, 99.0, 5f, false))
-        assertEquals(AutoPauseEvent.None, controller.update(13_000, 99.0, 5f, false))
-        assertEquals(AutoPauseEvent.None, controller.update(14_000, 1.5, 5f, false))
-        assertEquals(AutoPauseEvent.Resume, controller.update(17_000, 1.5, 5f, false))
+    @Test fun stateMachineSupportsExplicitManualPauseOnly() {
+        val sm = WorkoutStateMachine()
+        assertTrue(sm.transition(WorkoutStatus.PREPARING))
+        assertTrue(sm.transition(WorkoutStatus.ACTIVE))
+        assertTrue(sm.transition(WorkoutStatus.MANUAL_PAUSED))
+        assertTrue(sm.transition(WorkoutStatus.ACTIVE))
     }
 
     @Test fun stateMachineRejectsIllegalFinish() {
