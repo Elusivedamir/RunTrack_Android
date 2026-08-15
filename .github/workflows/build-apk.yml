@@ -54,8 +54,7 @@ jobs:
             python3 -m pip install               --disable-pip-version-check               --no-cache-dir               "piper-tts==1.4.2"
 
             curl --fail --location --retry 4 --retry-all-errors               -o "$VOICE_DIR/ru_RU-dmitri-medium.onnx"               "$MODEL_BASE/ru_RU-dmitri-medium.onnx?download=true"
-            printf '%s  %s
-'               "f073356ebc4bd0f80c5af58df2953a5988bd5bdab1eb38635ce960b071fbefcb"               "$VOICE_DIR/ru_RU-dmitri-medium.onnx"               | sha256sum -c -
+            echo "f073356ebc4bd0f80c5af58df2953a5988bd5bdab1eb38635ce960b071fbefcb  $VOICE_DIR/ru_RU-dmitri-medium.onnx" | sha256sum -c -
 
             curl --fail --location --retry 4 --retry-all-errors               -o "$VOICE_DIR/ru_RU-dmitri-medium.onnx.json"               "$MODEL_BASE/ru_RU-dmitri-medium.onnx.json?download=true"
 
