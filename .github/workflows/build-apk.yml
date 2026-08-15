@@ -29,7 +29,7 @@ jobs:
       - name: Install required Android SDK packages
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;35.0.0"
+          sdkmanager "platform-tools" "emulator" "platforms;android-36" "build-tools;35.0.0"
 
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
@@ -38,6 +38,32 @@ jobs:
 
       - name: Prepare diagnostic logs
         run: mkdir -p ci-logs
+
+      - name: Generate offline Russian voice assets
+        id: voice
+        continue-on-error: true
+        run: |
+          set +e
+          set -o pipefail
+          (
+            set -euo pipefail
+            VOICE_DIR="$RUNNER_TEMP/runtrack-piper"
+            MODEL_BASE="https://huggingface.co/rhasspy/piper-voices/resolve/a31bce3ed50c05399b2a830efd1c607df03cf4b5/ru/ru_RU/dmitri/medium"
+            mkdir -p "$VOICE_DIR"
+
+            python3 -m pip install               --disable-pip-version-check               --no-cache-dir               "piper-tts==1.4.2"
+
+            curl --fail --location --retry 4 --retry-all-errors               -o "$VOICE_DIR/ru_RU-dmitri-medium.onnx"               "$MODEL_BASE/ru_RU-dmitri-medium.onnx?download=true"
+            printf '%s  %s
+'               "f073356ebc4bd0f80c5af58df2953a5988bd5bdab1eb38635ce960b071fbefcb"               "$VOICE_DIR/ru_RU-dmitri-medium.onnx"               | sha256sum -c -
+
+            curl --fail --location --retry 4 --retry-all-errors               -o "$VOICE_DIR/ru_RU-dmitri-medium.onnx.json"               "$MODEL_BASE/ru_RU-dmitri-medium.onnx.json?download=true"
+
+            python3 tools/generate_voice_assets.py               --model "$VOICE_DIR/ru_RU-dmitri-medium.onnx"               --config "$VOICE_DIR/ru_RU-dmitri-medium.onnx.json"               --output app/src/main/assets/voice_ru
+          ) 2>&1 | tee ci-logs/00-voice-assets.log
+          CODE=${PIPESTATUS[0]}
+          echo "exit_code=$CODE"
+          exit "$CODE"
 
       # -------------------------------------------------
       # 1. Основной Kotlin-код
@@ -129,6 +155,16 @@ jobs:
           gradle --no-daemon --continue --console=plain \
             :app:assembleDebug \
             2>&1 | tee ci-logs/06-assemble-debug.log
+          CODE=${PIPESTATUS[0]}
+          echo "exit_code=$CODE"
+          exit "$CODE"
+
+      - name: Verify offline voice package
+        id: voice_apk
+        continue-on-error: true
+        run: |
+          set +e
+          python3 tools/generate_voice_assets.py             --verify-apk app/build/outputs/apk/debug/app-debug.apk             2>&1 | tee ci-logs/07-voice-apk.log
           CODE=${PIPESTATUS[0]}
           echo "exit_code=$CODE"
           exit "$CODE"
@@ -247,11 +283,13 @@ jobs:
           echo "========================================"
           echo "RUNTRACK FINAL STATUS"
           echo "========================================"
+          echo "Voice assets:   ${{ steps.voice.outcome }}"
           echo "Main compile:   ${{ steps.compile.outcome }}"
           echo "Unit tests:     ${{ steps.unit.outcome }}"
           echo "Android tests:  ${{ steps.android_tests.outcome }}"
           echo "Lint:           ${{ steps.lint.outcome }}"
           echo "APK build:      ${{ steps.apk.outcome }}"
+          echo "Voice in APK:   ${{ steps.voice_apk.outcome }}"
           echo "AVD home:       ${{ steps.avd_home.outcome }}"
           echo "KVM setup:      ${{ steps.kvm.outcome }}"
           echo "Runtime smoke:  ${{ steps.smoke.outcome }}"
@@ -259,11 +297,13 @@ jobs:
 
           FAILED=0
 
+          [ "${{ steps.voice.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.compile.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.unit.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.android_tests.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.lint.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.apk.outcome }}" = "success" ] || FAILED=1
+          [ "${{ steps.voice_apk.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.avd_home.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.kvm.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.smoke.outcome }}" = "success" ] || FAILED=1

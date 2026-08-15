@@ -7,6 +7,7 @@ import com.runtrack.app.export.PortableBackupManager
 import com.runtrack.app.export.WorkoutExportManager
 import com.runtrack.app.weather.WeatherRepository
 import com.runtrack.app.weather.WeatherUpdateCoordinator
+import com.runtrack.app.voice.VoiceAnnouncementManager
 
 object RunTrackRuntime {
     @Volatile private var initialized = false
@@ -15,6 +16,8 @@ object RunTrackRuntime {
     lateinit var trackingRepository: TrackingRepository
         private set
     lateinit var settingsRepository: SettingsRepository
+        private set
+    lateinit var voiceAnnouncementManager: VoiceAnnouncementManager
         private set
     lateinit var backupManager: PortableBackupManager
         private set
@@ -36,6 +39,7 @@ object RunTrackRuntime {
         database = RunTrackDatabase.get(app)
         trackingRepository = TrackingRepository(database)
         settingsRepository = SettingsRepository(app)
+        voiceAnnouncementManager = VoiceAnnouncementManager(app, settingsRepository)
         weatherRepository = WeatherRepository(database.workoutDao())
         weatherUpdateCoordinator = WeatherUpdateCoordinator(weatherRepository)
         backupManager = PortableBackupManager(app, database, settingsRepository)

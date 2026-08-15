@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
 import com.runtrack.app.R
 import com.runtrack.app.domain.LocationSample
+import com.runtrack.app.voice.KilometerAnnouncementTracker
 import com.runtrack.app.weather.WeatherUpdateCoordinator
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
@@ -22,6 +23,7 @@ class WorkoutTrackingService : Service() {
     private lateinit var fused: FusedLocationProviderClient
     private lateinit var repository: TrackingRepository
     private lateinit var weatherUpdateCoordinator: WeatherUpdateCoordinator
+    private val kilometerAnnouncementTracker = KilometerAnnouncementTracker()
     @Volatile private var updatesRequested = false
     @Volatile private var foregroundStarted = false
     @Volatile private var heartRateConnected = false
@@ -76,6 +78,9 @@ class WorkoutTrackingService : Service() {
         createNotificationChannel()
         scope.launch {
             repository.state.collectLatest { snapshot ->
+                kilometerAnnouncementTracker.onSnapshot(snapshot).forEach {
+                    RunTrackRuntime.voiceAnnouncementManager.announceKilometer(it)
+                }
                 if (foregroundStarted && snapshot != null) {
                     updateNotification(snapshot.notificationText())
                 }
@@ -121,7 +126,15 @@ class WorkoutTrackingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START_UPDATES, ACTION_RESUME_UPDATES -> {
+            ACTION_START_UPDATES -> {
+                ensureForeground(paused = false)
+                if (requestLocationUpdatesIfAllowed()) {
+                    repository.state.value?.let {
+                        RunTrackRuntime.voiceAnnouncementManager.announceStart(it.workoutId)
+                    }
+                }
+            }
+            ACTION_RESUME_UPDATES -> {
                 ensureForeground(paused = false)
                 requestLocationUpdatesIfAllowed()
             }
@@ -173,15 +186,15 @@ class WorkoutTrackingService : Service() {
         else -> "Запись тренировки активна"
     }
 
-    private fun requestLocationUpdatesIfAllowed() {
-        if (updatesRequested) return
+    private fun requestLocationUpdatesIfAllowed(): Boolean {
+        if (updatesRequested) return true
         val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (!fineGranted) {
             scope.launch {
                 repository.requireRecovery(System.currentTimeMillis(), SystemClock.elapsedRealtime())
                 stopSelfSafely()
             }
-            return
+            return false
         }
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, LOCATION_INTERVAL_MS)
             .setMinUpdateIntervalMillis(MIN_LOCATION_INTERVAL_MS)
@@ -191,11 +204,13 @@ class WorkoutTrackingService : Service() {
         try {
             fused.requestLocationUpdates(request, callback, Looper.getMainLooper())
             updatesRequested = true
+            return true
         } catch (_: SecurityException) {
             scope.launch {
                 repository.requireRecovery(System.currentTimeMillis(), SystemClock.elapsedRealtime())
                 stopSelfSafely()
             }
+            return false
         }
     }
 

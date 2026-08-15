@@ -1425,6 +1425,7 @@ private fun SettingsScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -> Un
     NativePage(title = "Настройки", onBack = { onNavigate(14) }, bottomNavSelected = 3, onNavigate = onNavigate) {
         LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 14.dp)) {
             item { SettingSwitch(Icons.Outlined.Notifications, "Уведомления", "Необязательные итоги тренировок", settings.notificationsEnabled, ::setOptionalNotifications) }
+            item { SettingSwitch(Icons.Outlined.VolumeUp, "Голосовые подсказки", "«Старт» и каждый полный километр · офлайн", settings.voiceAnnouncementsEnabled, viewModel::setVoiceAnnouncementsEnabled) }
             item { SettingSwitch(Icons.Outlined.Visibility, "Не выключать экран", "Только во время активной тренировки", settings.keepScreenOn, viewModel::setKeepScreenOn) }
             item { InfoRow(Icons.Outlined.Straighten, "Единицы измерения", if (settings.units == UnitSystem.METRIC) "Километры · кг · °C" else "Мили · lb · °F", RtBlue) { unitsDialog = true } }
             item { InfoRow(Icons.Outlined.Language, "Язык", "Русский · системная локаль", RtText2) { openAppLanguageSettings(context) } }

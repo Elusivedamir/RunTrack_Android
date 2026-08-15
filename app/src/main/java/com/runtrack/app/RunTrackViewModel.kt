@@ -387,6 +387,7 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
     fun clearOperationError() { if (_operation.value is UiOperationState.Error) _operation.value = UiOperationState.Idle }
 
     fun setNotificationsEnabled(value: Boolean) = viewModelScope.launch { settingsRepo.setNotificationsEnabled(value) }
+    fun setVoiceAnnouncementsEnabled(value: Boolean) = viewModelScope.launch { settingsRepo.setVoiceAnnouncementsEnabled(value) }
     fun setKeepScreenOn(value: Boolean) = viewModelScope.launch { settingsRepo.setKeepScreenOn(value) }
     fun setUnits(value: UnitSystem) = viewModelScope.launch { settingsRepo.setUnits(value) }
     fun setMapLayer(value: MapLayer) = viewModelScope.launch { settingsRepo.setMapLayer(value) }

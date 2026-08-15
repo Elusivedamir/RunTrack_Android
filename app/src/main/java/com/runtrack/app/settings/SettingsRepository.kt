@@ -12,6 +12,7 @@ private val Context.runTrackDataStore by preferencesDataStore(name = "runtrack_s
 
 data class RunTrackSettings(
     val notificationsEnabled: Boolean = false,
+    val voiceAnnouncementsEnabled: Boolean = true,
     val keepScreenOn: Boolean = false,
     val units: UnitSystem = UnitSystem.METRIC,
     val mapLayer: MapLayer = MapLayer.STANDARD,
@@ -25,6 +26,7 @@ data class RunTrackSettings(
 class SettingsRepository(private val context: Context) {
     private object Keys {
         val notifications = booleanPreferencesKey("notifications_enabled")
+        val voiceAnnouncements = booleanPreferencesKey("voice_announcements_enabled")
         val keepScreen = booleanPreferencesKey("keep_screen_on")
         val units = stringPreferencesKey("unit_system")
         val mapLayer = stringPreferencesKey("map_layer")
@@ -38,6 +40,7 @@ class SettingsRepository(private val context: Context) {
     val settings: Flow<RunTrackSettings> = context.runTrackDataStore.data.map { p ->
         RunTrackSettings(
             notificationsEnabled = p[Keys.notifications] ?: false,
+            voiceAnnouncementsEnabled = p[Keys.voiceAnnouncements] ?: true,
             keepScreenOn = p[Keys.keepScreen] ?: false,
             units = p[Keys.units]?.let { runCatching { UnitSystem.valueOf(it) }.getOrNull() } ?: UnitSystem.METRIC,
             mapLayer = p[Keys.mapLayer]?.let { runCatching { MapLayer.valueOf(it) }.getOrNull() } ?: MapLayer.STANDARD,
@@ -50,6 +53,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setNotificationsEnabled(value: Boolean) = context.runTrackDataStore.edit { it[Keys.notifications] = value }
+    suspend fun setVoiceAnnouncementsEnabled(value: Boolean) = context.runTrackDataStore.edit { it[Keys.voiceAnnouncements] = value }
     suspend fun setKeepScreenOn(value: Boolean) = context.runTrackDataStore.edit { it[Keys.keepScreen] = value }
     suspend fun setUnits(value: UnitSystem) = context.runTrackDataStore.edit { it[Keys.units] = value.name }
     suspend fun setMapLayer(value: MapLayer) = context.runTrackDataStore.edit { it[Keys.mapLayer] = value.name }
@@ -73,6 +77,7 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun restore(value: RunTrackSettings) = context.runTrackDataStore.edit { p ->
         p[Keys.notifications] = value.notificationsEnabled
+        p[Keys.voiceAnnouncements] = value.voiceAnnouncementsEnabled
         p[Keys.keepScreen] = value.keepScreenOn
         p[Keys.units] = value.units.name
         p[Keys.mapLayer] = value.mapLayer.name

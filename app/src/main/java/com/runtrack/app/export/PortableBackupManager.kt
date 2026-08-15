@@ -198,6 +198,7 @@ class PortableBackupManager(
 
     private fun RunTrackSettings.toJson() = JSONObject().apply {
         put("notifications", notificationsEnabled)
+        put("voiceAnnouncements", voiceAnnouncementsEnabled)
         put("profileName", profileName)
         put("keepScreenOn", keepScreenOn)
         put("units", units.name)
@@ -210,6 +211,7 @@ class PortableBackupManager(
 
     private fun JSONObject.toSettings() = RunTrackSettings(
         notificationsEnabled = optBoolean("notifications", false),
+        voiceAnnouncementsEnabled = optBoolean("voiceAnnouncements", true),
         profileName = optString("profileName", "Пользователь").trim().take(80).ifBlank { "Пользователь" },
         keepScreenOn = optBoolean("keepScreenOn", false),
         units = optString("units").let { runCatching { UnitSystem.valueOf(it) }.getOrDefault(UnitSystem.METRIC) },

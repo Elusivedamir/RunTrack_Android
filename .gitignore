@@ -9,3 +9,4 @@ captures/
 .externalNativeBuild/
 .cxx/
 secrets.properties
+/app/src/main/assets/voice_ru/
