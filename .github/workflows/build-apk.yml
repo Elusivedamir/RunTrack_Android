@@ -205,7 +205,7 @@ jobs:
             echo "============================================================"
             echo
 
-            grep -RniE \
+            grep --exclude='00-error-summary.txt' -RniE \
               '(^|[[:space:]])(e:|error:|Error:|FAILURE:|Exception|Caused by:|FAILED)' \
               ci-logs \
               || true
