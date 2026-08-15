@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -43,6 +44,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.os.ConfigurationCompat
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.runtrack.app.data.RoutePointEntity
@@ -1223,10 +1225,11 @@ private fun ProfileScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -> Uni
     val bmi = remember(settings.weightKg, settings.heightCm) {
         WorkoutMath.bodyMassIndex(settings.weightKg, settings.heightCm)
     }
+    val locale = ConfigurationCompat.getLocales(LocalConfiguration.current)[0] ?: Locale.ROOT
     val bodySummary = buildList {
-        settings.weightKg?.let { add(String.format(Locale.getDefault(), "%.1f кг", it)) }
-        settings.heightCm?.let { add(String.format(Locale.getDefault(), "%.0f см", it)) }
-        bmi?.let { add(String.format(Locale.getDefault(), "ИМТ %.1f", it)) }
+        settings.weightKg?.let { add(String.format(locale, "%.1f кг", it)) }
+        settings.heightCm?.let { add(String.format(locale, "%.0f см", it)) }
+        bmi?.let { add(String.format(locale, "ИМТ %.1f", it)) }
     }.joinToString(" · ")
     val profileSubtitle =
         if (bodySummary.isBlank()) "RunTrack · вес и рост не указаны"
