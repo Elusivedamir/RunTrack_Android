@@ -263,7 +263,7 @@ private fun LiveWorkoutMetricsOverlay(
             )
             LiveMetricChip(
                 label = "Каденс",
-                value = RunTrackFormatter.cadence(cadence),
+                value = cadence?.let { String.format(java.util.Locale.getDefault(), "%.0f шаг/мин", it) } ?: "—",
             )
         }
     }
