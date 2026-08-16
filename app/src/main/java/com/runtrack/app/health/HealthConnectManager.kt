@@ -17,7 +17,6 @@ import com.runtrack.app.data.WorkoutEntity
 import com.runtrack.app.domain.WorkoutStatus
 import com.runtrack.app.domain.WorkoutType
 import java.time.Instant
-import java.time.ZoneId
 
 enum class HealthConnectAvailability {
     AVAILABLE,
@@ -91,7 +90,9 @@ class HealthConnectManager(context: Context) {
         // instead of trusting endedAt, which can move backwards if the system clock is changed.
         val endMillis = healthConnectEndMillis(workout.startedAt, workout.elapsedMillis)
         val endTime = Instant.ofEpochMilli(endMillis)
-        val zoneRules = ZoneId.systemDefault().rules
+        // DB v4 did not persist the user-experienced historical zone offset.
+        // Do not fabricate one from the device's current timezone at export time.
+        // Health Connect accepts null when the historical offset is unknown.
         val device = Device(type = Device.TYPE_PHONE)
         fun metadata(suffix: String) = Metadata.activelyRecorded(
             device = device,
@@ -102,9 +103,9 @@ class HealthConnectManager(context: Context) {
         val records = mutableListOf<Record>(
             ExerciseSessionRecord(
                 startTime = startTime,
-                startZoneOffset = zoneRules.getOffset(startTime),
+                startZoneOffset = null,
                 endTime = endTime,
-                endZoneOffset = zoneRules.getOffset(endTime),
+                endZoneOffset = null,
                 exerciseType = workout.exerciseType(),
                 metadata = metadata("session"),
             )
@@ -112,9 +113,9 @@ class HealthConnectManager(context: Context) {
         workout.distanceMeters.takeIf { it.isFinite() && it > 0.0 }?.let { distance ->
             records += DistanceRecord(
                 startTime = startTime,
-                startZoneOffset = zoneRules.getOffset(startTime),
+                startZoneOffset = null,
                 endTime = endTime,
-                endZoneOffset = zoneRules.getOffset(endTime),
+                endZoneOffset = null,
                 distance = distance.meters,
                 metadata = metadata("distance"),
             )
@@ -122,9 +123,9 @@ class HealthConnectManager(context: Context) {
         workout.caloriesEstimate.takeIf { it > 0 }?.let { calories ->
             records += TotalCaloriesBurnedRecord(
                 startTime = startTime,
-                startZoneOffset = zoneRules.getOffset(startTime),
+                startZoneOffset = null,
                 endTime = endTime,
-                endZoneOffset = zoneRules.getOffset(endTime),
+                endZoneOffset = null,
                 energy = calories.kilocalories,
                 metadata = metadata("calories"),
             )

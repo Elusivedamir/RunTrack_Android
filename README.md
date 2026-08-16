@@ -30,7 +30,7 @@ RunTrack is a native Android fitness tracker implemented with Kotlin and Jetpack
 ./gradlew :app:assembleRelease
 ```
 
-The release build produced by CI is unsigned until an explicit release signing configuration is supplied.
+Push builds on `main` produce a permanently signed release APK using GitHub Actions secrets and verify its certificate SHA-256; pull-request builds only assemble the unsigned release artifact.
 
 ## CI
 

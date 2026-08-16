@@ -273,8 +273,29 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun resumeWorkout(onResumed: () -> Unit = {}) = launchExclusive("resume") {
-        if (tracking.resume(System.currentTimeMillis(), SystemClock.elapsedRealtime())) {
-            appContext.startService(Intent(appContext, WorkoutTrackingService::class.java).setAction(WorkoutTrackingService.ACTION_RESUME_UPDATES))
+        val resumeWall = System.currentTimeMillis()
+        val resumeElapsed = SystemClock.elapsedRealtime()
+        val resumed = try {
+            com.runtrack.app.tracking.resumeWithRecoveryOnStartFailure(
+                resume = { tracking.resume(resumeWall, resumeElapsed) },
+                startService = {
+                    appContext.startService(
+                        Intent(appContext, WorkoutTrackingService::class.java)
+                            .setAction(WorkoutTrackingService.ACTION_RESUME_UPDATES)
+                    )
+                },
+                requireRecovery = {
+                    tracking.requireRecovery(System.currentTimeMillis(), SystemClock.elapsedRealtime())
+                },
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            _liveTracking.value = tracking.snapshot(SystemClock.elapsedRealtime())
+            ensureTicker(false)
+            throw IllegalStateException("Не удалось возобновить GPS-службу", error)
+        }
+        if (resumed) {
             _liveTracking.value = tracking.snapshot(SystemClock.elapsedRealtime())
             onResumed()
         }

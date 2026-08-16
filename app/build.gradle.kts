@@ -14,8 +14,8 @@ android {
         minSdk = 26
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 8
-        versionName = "0.7.1-independent-audit"
+        versionCode = 9
+        versionName = "0.7.2-runtime-hardening"
 
     }
 

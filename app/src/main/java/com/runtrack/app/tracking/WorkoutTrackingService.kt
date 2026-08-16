@@ -32,7 +32,9 @@ class WorkoutTrackingService : Service() {
     private lateinit var repository: TrackingRepository
     private lateinit var weatherUpdateCoordinator: WeatherUpdateCoordinator
     private val kilometerAnnouncementTracker = KilometerAnnouncementTracker()
-    @Volatile private var updatesRequested = false
+    private val locationRegistration = LocationRegistrationState()
+    private val locationCallbackLock = Any()
+    private var activeLocationCallback: LocationCallback? = null
     @Volatile private var foregroundStarted = false
     @Volatile private var heartRateConnected = false
     private var checkpointJob: Job? = null
@@ -63,8 +65,9 @@ class WorkoutTrackingService : Service() {
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     }
 
-    private val callback = object : LocationCallback() {
+    private fun createLocationCallback(registrationToken: Long) = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
+            if (!locationRegistration.isRegistered(registrationToken)) return
             if (result.locations.isEmpty()) return
             // Callback runs on the main looper. Preserve callback arrival order and let one
             // consumer own all GPS -> Room sequencing.
@@ -72,6 +75,7 @@ class WorkoutTrackingService : Service() {
         }
 
         override fun onLocationAvailability(availability: LocationAvailability) {
+            if (!locationRegistration.isRegistered(registrationToken)) return
             scope.launch { repository.reportGpsAvailability(availability.isLocationAvailable) }
         }
     }
@@ -85,11 +89,14 @@ class WorkoutTrackingService : Service() {
         weatherUpdateCoordinator = RunTrackRuntime.weatherUpdateCoordinator
         createNotificationChannel()
         scope.launch {
-            for (batch in locationBatches) {
-                for (location in batch.sortedBy { it.elapsedRealtimeNanos }) {
-                    processLocation(location)
-                }
-            }
+            consumeBatchesSafely(
+                batches = locationBatches,
+                orderBy = { it.elapsedRealtimeNanos },
+                process = ::processLocation,
+                onFailure = { error ->
+                    recoverAndStop("GPS persistence pipeline failed", error)
+                },
+            )
         }
         scope.launch {
             repository.state.collectLatest { snapshot ->
@@ -159,7 +166,7 @@ class WorkoutTrackingService : Service() {
             ACTION_START_UPDATES -> {
                 if (!ensureForeground(paused = false)) return START_NOT_STICKY
                 configureStepSensor(active = true, allowInitialize = true)
-                if (requestLocationUpdatesIfAllowed()) {
+                requestLocationUpdatesIfAllowed {
                     repository.state.value?.let {
                         RunTrackRuntime.voiceAnnouncementManager.announceStart(it.workoutId)
                     }
@@ -235,6 +242,25 @@ class WorkoutTrackingService : Service() {
         }
         return sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null ||
             sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) != null
+    }
+
+    private suspend fun recoverAndStop(message: String, error: Exception) {
+        android.util.Log.e("RunTrackTracking", message, error)
+        try {
+            repository.requireRecovery(System.currentTimeMillis(), SystemClock.elapsedRealtime())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (recoveryError: Exception) {
+            // The original failure may itself be a Room/storage failure. Do not crash the process
+            // while attempting the recovery write; the persisted ACTIVE session is still recoverable
+            // on the next process start by restoreRecoverable().
+            android.util.Log.e(
+                "RunTrackTracking",
+                "Failed to persist RECOVERY_REQUIRED after tracking failure",
+                recoveryError,
+            )
+        }
+        stopSelfSafely()
     }
 
     private suspend fun processLocation(location: Location) {
@@ -356,16 +382,25 @@ class WorkoutTrackingService : Service() {
         stepAccumulator = null
     }
 
-    private fun requestLocationUpdatesIfAllowed(): Boolean {
-        if (updatesRequested) return true
-        val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    private fun requestLocationUpdatesIfAllowed(onRegistered: (() -> Unit)? = null) {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
         if (!fineGranted) {
             scope.launch {
-                repository.requireRecovery(System.currentTimeMillis(), SystemClock.elapsedRealtime())
-                stopSelfSafely()
+                recoverAndStop(
+                    "Fine location permission missing before GPS registration",
+                    SecurityException("ACCESS_FINE_LOCATION is not granted"),
+                )
             }
-            return false
+            return
         }
+
+        val token = synchronized(locationCallbackLock) {
+            locationRegistration.beginIfNeeded()
+        } ?: return
+        val requestCallback = createLocationCallback(token)
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, LOCATION_INTERVAL_MS)
             .setMinUpdateIntervalMillis(MIN_LOCATION_INTERVAL_MS)
             .setMinUpdateDistanceMeters(MIN_DISTANCE_METERS)
@@ -373,23 +408,78 @@ class WorkoutTrackingService : Service() {
             // Also require a fresh first point after start/resume so pause movement is never bridged.
             .setMaxUpdateAgeMillis(0L)
             .build()
+
         try {
-            fused.requestLocationUpdates(request, callback, Looper.getMainLooper())
-            updatesRequested = true
-            return true
-        } catch (_: SecurityException) {
-            scope.launch {
-                repository.requireRecovery(System.currentTimeMillis(), SystemClock.elapsedRealtime())
-                stopSelfSafely()
+            fused.requestLocationUpdates(request, requestCallback, Looper.getMainLooper())
+                .addOnSuccessListener {
+                    val accepted = synchronized(locationCallbackLock) {
+                        if (locationRegistration.markSuccess(token)) {
+                            activeLocationCallback = requestCallback
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    if (accepted) {
+                        runCatching { onRegistered?.invoke() }
+                            .onFailure {
+                                android.util.Log.w(
+                                    "RunTrackTracking",
+                                    "Post-registration action failed",
+                                    it,
+                                )
+                            }
+                    } else {
+                        // The request completed after pause/stop or after a newer generation began.
+                        // It owns a generation-specific callback, so removing it cannot cancel a newer one.
+                        runCatching { fused.removeLocationUpdates(requestCallback) }
+                            .onFailure {
+                                android.util.Log.w(
+                                    "RunTrackTracking",
+                                    "Failed to remove stale location callback",
+                                    it,
+                                )
+                            }
+                    }
+                }
+                .addOnFailureListener { error ->
+                    val currentFailure = synchronized(locationCallbackLock) {
+                        locationRegistration.markFailure(token)
+                    }
+                    if (currentFailure) {
+                        scope.launch {
+                            recoverAndStop("Fused location registration failed", error)
+                        }
+                    }
+                }
+        } catch (error: Exception) {
+            val currentFailure = synchronized(locationCallbackLock) {
+                locationRegistration.markFailure(token)
             }
-            return false
+            if (currentFailure) {
+                scope.launch {
+                    recoverAndStop("Fused location registration threw before completion", error)
+                }
+            }
         }
     }
 
     private fun removeLocationUpdates() {
-        if (!updatesRequested) return
-        fused.removeLocationUpdates(callback)
-        updatesRequested = false
+        val callbackToRemove = synchronized(locationCallbackLock) {
+            locationRegistration.cancel()
+            activeLocationCallback.also { activeLocationCallback = null }
+        }
+        if (callbackToRemove != null) {
+            try {
+                fused.removeLocationUpdates(callbackToRemove)
+            } catch (error: Exception) {
+                android.util.Log.w(
+                    "RunTrackTracking",
+                    "Failed to request location callback removal",
+                    error,
+                )
+            }
+        }
     }
 
     private fun stopSelfSafely() {
