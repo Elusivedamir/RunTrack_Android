@@ -40,6 +40,33 @@ class TrackingAsyncGuardsTest {
     }
 
     @Test
+    fun generationConsumerDropsBatchQueuedBeforePauseResume() = runBlocking {
+        val state = LocationRegistrationState()
+        val beforePause = state.beginIfNeeded() ?: error("first request not created")
+        assertTrue(state.markSuccess(beforePause))
+
+        val channel = Channel<GenerationBatch<Int>>(capacity = 2)
+        channel.send(GenerationBatch(beforePause, listOf(1)))
+
+        state.cancel()
+        val afterResume = state.beginIfNeeded() ?: error("resume request not created")
+        assertTrue(state.markSuccess(afterResume))
+        channel.send(GenerationBatch(afterResume, listOf(2)))
+        channel.close()
+
+        val processed = mutableListOf<Int>()
+        consumeGenerationBatchesSafely(
+            batches = channel,
+            isCurrentGeneration = state::isRegistered,
+            orderBy = { it.toLong() },
+            process = { processed += it },
+            onFailure = { throw it },
+        )
+
+        assertEquals(listOf(2), processed)
+    }
+
+    @Test
     fun batchConsumerReportsProcessingFailureWithoutEscaping() = runBlocking {
         val channel = Channel<List<Int>>(capacity = 1)
         channel.send(listOf(3, 1, 2))

@@ -13,6 +13,7 @@ import com.runtrack.app.domain.WorkoutType
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -71,6 +72,55 @@ class TrackingRepositoryTest {
 
         val expectedRecordedDistance = Geo.distanceMeters(b, c)
         assertEquals(expectedRecordedDistance, relation.workout.distanceMeters, 1.0)
+    }
+
+    @Test fun queuedPrePausePointCannotAnchorResumedSegment() = runBlocking {
+        val id = repository.start(
+            type = WorkoutType.RUN,
+            goal = WorkoutGoal(),
+            wallClockMillis = 1_000L,
+            elapsedRealtimeMillis = 1_000L,
+        )
+        val beforePause = LocationSample(
+            timestampMillis = 1_500L,
+            latitude = 55.0,
+            longitude = 37.0,
+            accuracyMeters = 5f,
+            monotonicMillis = 1_500L,
+        )
+        assertTrue(repository.onLocation(beforePause, 1_500L))
+        assertTrue(repository.manualPause(2_000L, 2_000L))
+        assertTrue(repository.resume(5_000L, 5_000L))
+
+        val staleQueued = beforePause.copy(
+            timestampMillis = 1_900L,
+            latitude = 55.0001,
+            monotonicMillis = 1_900L,
+        )
+        assertFalse(repository.onLocation(staleQueued, 1_900L))
+
+        val resumedAnchor = beforePause.copy(
+            timestampMillis = 5_100L,
+            latitude = 55.0010,
+            monotonicMillis = 5_100L,
+        )
+        val resumedNext = resumedAnchor.copy(
+            timestampMillis = 6_100L,
+            latitude = resumedAnchor.latitude + 5.0 / 111_111.0,
+            monotonicMillis = 6_100L,
+        )
+        assertTrue(repository.onLocation(resumedAnchor, 5_100L))
+        assertTrue(repository.onLocation(resumedNext, 6_100L))
+
+        val relation = requireNotNull(db.workoutDao().getWorkoutWithRoute(id))
+        val route = relation.route.sortedBy { it.elapsedRealtimeMillis }
+        assertEquals(3, route.size)
+        assertEquals(listOf(0, 1, 1), route.map { it.segmentIndex })
+        assertEquals(
+            Geo.distanceMeters(resumedAnchor, resumedNext),
+            relation.workout.distanceMeters,
+            1.0,
+        )
     }
 
     @Test fun finishIsDurablyFinishingBeforeItBecomesCompleted() = runBlocking {

@@ -203,6 +203,13 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         val sm = stateMachine ?: return false
         val workoutType = type ?: return false
         val monotonic = sample.monotonicMillis ?: elapsedRealtimeMillis
+
+        // A callback can already be queued when PAUSE invalidates its registration. If that old
+        // payload reaches this suspend boundary after RESUME, never let it become the anchor of
+        // the new route segment. elapsedRealtime is monotonic within the current boot.
+        val activeSegmentStartedAt = movingStartedAtElapsedMillis
+        if (sm.state == WorkoutStatus.ACTIVE && activeSegmentStartedAt != null && monotonic < activeSegmentStartedAt) return false
+
         _state.value = _state.value?.copy(
             gpsAvailable = true,
             lastAccuracyMeters = sample.accuracyMeters,

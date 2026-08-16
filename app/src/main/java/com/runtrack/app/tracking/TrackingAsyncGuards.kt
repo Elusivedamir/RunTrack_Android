@@ -47,6 +47,41 @@ internal class LocationRegistrationState {
     fun isRegistered(token: Long): Boolean = registered && token == generation
 }
 
+/** Carries the location-registration generation across the asynchronous queue boundary. */
+internal data class GenerationBatch<T>(
+    val generation: Long,
+    val items: List<T>,
+)
+
+/**
+ * Owns ordered consumption for generation-tagged callback batches.
+ *
+ * A batch queued by an old location registration is discarded after pause/stop/resume.
+ * The generation is checked again before every item so invalidation while a batch is being
+ * drained prevents the remaining stale items from crossing the lifecycle boundary.
+ */
+internal suspend fun <T> consumeGenerationBatchesSafely(
+    batches: ReceiveChannel<GenerationBatch<T>>,
+    isCurrentGeneration: (Long) -> Boolean,
+    orderBy: (T) -> Long,
+    process: suspend (T) -> Unit,
+    onFailure: suspend (Exception) -> Unit,
+) {
+    try {
+        for (batch in batches) {
+            if (!isCurrentGeneration(batch.generation)) continue
+            for (item in batch.items.sortedBy(orderBy)) {
+                if (!isCurrentGeneration(batch.generation)) break
+                process(item)
+            }
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        onFailure(error)
+    }
+}
+
 /**
  * Owns ordered batch consumption while keeping ordinary processing failures inside the
  * tracking recovery boundary. Coroutine cancellation is never converted into a failure.

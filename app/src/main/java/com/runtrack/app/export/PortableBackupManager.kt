@@ -2,7 +2,9 @@ package com.runtrack.app.export
 
 import android.content.Context
 import android.net.Uri
+import android.util.AtomicFile
 import androidx.room.withTransaction
+import com.runtrack.app.data.HeartRateSampleEntity
 import com.runtrack.app.data.RoutePointEntity
 import com.runtrack.app.data.RunTrackDatabase
 import com.runtrack.app.data.WorkoutEntity
@@ -16,11 +18,16 @@ import com.runtrack.app.domain.WorkoutTime
 import com.runtrack.app.settings.RunTrackSettings
 import com.runtrack.app.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 
 /**
  * Portable encrypted backup. The encryption key is derived from a user passphrase instead of the
@@ -32,6 +39,19 @@ class PortableBackupManager(
     private val settingsRepository: SettingsRepository,
 ) {
     private val dao = db.workoutDao()
+    private val restoreMutex = Mutex()
+    private val restoreJournalFile = File(context.filesDir, RESTORE_JOURNAL_FILE)
+
+    private data class RestoreWorkoutIdentity(
+        val id: String,
+        val sessionToken: String,
+    )
+
+    private data class PendingRestoreJournal(
+        val backupSha256: String,
+        val targetSettings: RunTrackSettings?,
+        val workouts: List<RestoreWorkoutIdentity>,
+    )
 
     suspend fun buildEncrypted(passphrase: CharArray): ByteArray = withContext(Dispatchers.IO) {
         validatePassphrase(passphrase)
@@ -95,103 +115,217 @@ class PortableBackupManager(
 
     /** Merge restore. Duplicate workout ids are rejected before any row is written. */
     suspend fun restoreEncrypted(bytes: ByteArray, passphrase: CharArray): Int = withContext(Dispatchers.IO) {
-        validatePassphrase(passphrase)
-        val plain = try {
-            PortableBackupCrypto.decrypt(bytes, passphrase)
-        } finally {
-            passphrase.fill('\u0000')
+        restoreMutex.withLock {
+            validatePassphrase(passphrase)
+            val plain = try {
+                PortableBackupCrypto.decrypt(bytes, passphrase)
+            } finally {
+                passphrase.fill('\u0000')
+            }
+            val fingerprint = sha256Hex(plain)
+            val root = runCatching { JSONObject(String(plain, StandardCharsets.UTF_8)) }
+                .getOrElse { throw IllegalArgumentException("Повреждённая резервная копия", it) }
+            check(root.optString("format") == BACKUP_FORMAT) { "Неизвестный формат резервной копии" }
+            val version = root.optInt("version", -1)
+            check(version in 1..BACKUP_VERSION) { "Версия резервной копии не поддерживается: $version" }
+
+            // Resolve an interrupted previous restore before validating duplicates for a new one.
+            val pendingBefore = loadPendingRestoreJournal()
+            if (pendingBefore != null) {
+                val committed = recoverPendingRestoreLocked(pendingBefore)
+                if (committed && pendingBefore.backupSha256 == fingerprint) {
+                    return@withLock pendingBefore.workouts.size
+                }
+            }
+
+            data class RestoredWorkout(
+                val workout: WorkoutEntity,
+                val route: List<RoutePointEntity>,
+                val heartRate: List<HeartRateSampleEntity>,
+                val weather: List<WeatherSnapshotEntity>,
+            )
+            val parsed = mutableListOf<RestoredWorkout>()
+            val array = root.optJSONArray("workouts") ?: JSONArray()
+            for (i in 0 until array.length()) {
+                val entry = array.getJSONObject(i)
+                val workout = entry.getJSONObject("workout").toWorkout()
+                require(workout.status == WorkoutStatus.COMPLETED.name) { "Backup содержит незавершённую тренировку" }
+                val routeArray = entry.optJSONArray("route") ?: JSONArray()
+                val route = (0 until routeArray.length()).map { idx ->
+                    routeArray.getJSONObject(idx).toRoutePoint(workout.id)
+                }
+                val heartArray = entry.optJSONArray("heartRate") ?: JSONArray()
+                val heartRate = (0 until heartArray.length()).map { idx ->
+                    heartArray.getJSONObject(idx).toHeartRateSample(workout.id)
+                }
+
+                /* Backup versions 1-2 did not contain weather. */
+                val weatherArray = entry.optJSONArray("weather") ?: JSONArray()
+                val weather = (0 until weatherArray.length()).map { idx ->
+                    weatherArray.getJSONObject(idx).toWeatherSnapshot(workout.id)
+                }
+
+                parsed += RestoredWorkout(workout, route, heartRate, weather)
+            }
+
+            val ids = parsed.map { it.workout.id }
+            require(ids.size == ids.toSet().size) { "Backup содержит повторяющиеся workout id" }
+            for (entry in parsed) {
+                val workout = entry.workout
+                check(dao.getWorkout(workout.id) == null) { "Тренировка ${workout.id} уже существует" }
+                check(dao.getWorkoutBySessionToken(workout.sessionToken) == null) { "Сессия ${workout.sessionToken} уже существует" }
+            }
+
+            val restoredSettings = root.optJSONObject("settings")?.toSettings()
+            val pending = PendingRestoreJournal(
+                backupSha256 = fingerprint,
+                targetSettings = restoredSettings,
+                workouts = parsed.map {
+                    RestoreWorkoutIdentity(it.workout.id, it.workout.sessionToken)
+                },
+            )
+
+            // The AtomicFile journal is durable before Room commits. On process death it tells
+            // startup whether to finish settings or discard an uncommitted restore intent.
+            writePendingRestoreJournal(pending)
+            try {
+                db.withTransaction {
+                    parsed.forEach { entry ->
+                        dao.insertWorkout(entry.workout)
+                        entry.route.forEach { dao.insertRoutePoint(it.copy(rowId = 0)) }
+                        entry.heartRate.forEach {
+                            check(dao.insertHeartRateSample(it.copy(rowId = 0)) > 0L) {
+                                "Не удалось восстановить sample пульса"
+                            }
+                        }
+                        entry.weather.forEach {
+                            check(dao.insertWeatherSnapshot(it.copy(rowId = 0)) > 0L) {
+                                "Не удалось восстановить weather snapshot"
+                            }
+                        }
+                    }
+                }
+            } catch (restoreError: Throwable) {
+                // The Room transaction rolled back. Do not let cancellation interrupt cleanup of
+                // the restore intent; existing user settings were never changed.
+                try {
+                    withContext(NonCancellable) { clearPendingRestoreJournal() }
+                } catch (journalError: Throwable) {
+                    restoreError.addSuppressed(journalError)
+                }
+                throw restoreError
+            }
+
+            // If this throws or the process dies here, the journal stays durable. The next startup
+            // (or retry of the same backup) sees the committed Room rows and applies settings
+            // idempotently before clearing the journal.
+            if (restoredSettings != null) {
+                settingsRepository.restore(restoredSettings)
+            }
+            clearPendingRestoreJournal()
+            parsed.size
         }
-        val root = runCatching { JSONObject(String(plain, StandardCharsets.UTF_8)) }
-            .getOrElse { throw IllegalArgumentException("Повреждённая резервная копия", it) }
-        check(root.optString("format") == BACKUP_FORMAT) { "Неизвестный формат резервной копии" }
-        val version = root.optInt("version", -1)
-        check(version in 1..BACKUP_VERSION) { "Версия резервной копии не поддерживается: $version" }
+    }
 
-        data class RestoredWorkout(
-            val workout: WorkoutEntity,
-            val route: List<RoutePointEntity>,
-            val heartRate: List<com.runtrack.app.data.HeartRateSampleEntity>,
-            val weather: List<WeatherSnapshotEntity>,
-        )
-        val parsed = mutableListOf<RestoredWorkout>()
-        val array = root.optJSONArray("workouts") ?: JSONArray()
-        for (i in 0 until array.length()) {
-            val entry = array.getJSONObject(i)
-            val workout = entry.getJSONObject("workout").toWorkout()
-            require(workout.status == WorkoutStatus.COMPLETED.name) { "Backup содержит незавершённую тренировку" }
-            val routeArray = entry.optJSONArray("route") ?: JSONArray()
-            val route = (0 until routeArray.length()).map { idx -> routeArray.getJSONObject(idx).toRoutePoint(workout.id) }
-            val heartArray = entry.optJSONArray("heartRate") ?: JSONArray()
-            val heartRate = (0 until heartArray.length()).map { idx ->
-                heartArray.getJSONObject(idx).toHeartRateSample(workout.id)
+    /** Completes or discards a restore interrupted by cancellation/process death/device restart. */
+    suspend fun recoverPendingRestore(): Boolean = withContext(Dispatchers.IO) {
+        restoreMutex.withLock { recoverPendingRestoreLocked() }
+    }
+
+    private suspend fun recoverPendingRestoreLocked(
+        pendingOverride: PendingRestoreJournal? = null,
+    ): Boolean {
+        val pending = pendingOverride ?: loadPendingRestoreJournal() ?: return false
+        val actualTokens = pending.workouts.map { expected ->
+            dao.getWorkout(expected.id)?.sessionToken
+        }
+        val roomCommitted = pending.workouts.indices.all { index ->
+            actualTokens[index] == pending.workouts[index].sessionToken
+        }
+        if (roomCommitted) {
+            pending.targetSettings?.let { settingsRepository.restore(it) }
+            clearPendingRestoreJournal()
+            return true
+        }
+
+        if (actualTokens.all { it == null }) {
+            clearPendingRestoreJournal()
+            return false
+        }
+
+        // Room restore is transactional, so a partial/mismatched set is not a state we can safely
+        // infer. Keep the journal for diagnosis instead of overwriting user settings or data.
+        error("Незавершённое восстановление имеет несогласованное состояние БД")
+    }
+
+    private fun writePendingRestoreJournal(pending: PendingRestoreJournal) {
+        val bytes = pending.toJson().toString().toByteArray(StandardCharsets.UTF_8)
+        require(bytes.size <= MAX_RESTORE_JOURNAL_BYTES) { "Журнал восстановления слишком большой" }
+        val atomic = AtomicFile(restoreJournalFile)
+        val output = atomic.startWrite()
+        try {
+            output.write(bytes)
+            atomic.finishWrite(output)
+        } catch (error: Throwable) {
+            atomic.failWrite(output)
+            throw error
+        }
+    }
+
+    private fun loadPendingRestoreJournal(): PendingRestoreJournal? {
+        if (!restoreJournalFile.exists()) return null
+        val bytes = AtomicFile(restoreJournalFile).openRead().use { input ->
+            input.readBytes().also {
+                require(it.size <= MAX_RESTORE_JOURNAL_BYTES) { "Журнал восстановления слишком большой" }
             }
+        }
+        return runCatching {
+            JSONObject(String(bytes, StandardCharsets.UTF_8)).toPendingRestoreJournal()
+        }.getOrElse { throw IllegalStateException("Повреждён внутренний журнал восстановления", it) }
+    }
 
-            /*
-             * Backup versions 1-2 did not contain weather.
-             * Missing weather therefore restores as an empty list.
-             */
-            val weatherArray = entry.optJSONArray("weather") ?: JSONArray()
-            val weather = (0 until weatherArray.length()).map { idx ->
-                weatherArray.getJSONObject(idx).toWeatherSnapshot(workout.id)
+    private fun clearPendingRestoreJournal() {
+        AtomicFile(restoreJournalFile).delete()
+    }
+
+    private fun PendingRestoreJournal.toJson() = JSONObject().apply {
+        put("version", RESTORE_JOURNAL_VERSION)
+        put("backupSha256", backupSha256)
+        targetSettings?.let { put("targetSettings", it.toJson()) }
+        put("workouts", JSONArray().apply {
+            workouts.forEach { identity ->
+                put(JSONObject().apply {
+                    put("id", identity.id)
+                    put("sessionToken", identity.sessionToken)
+                })
             }
+        })
+    }
 
-            parsed += RestoredWorkout(
-                workout = workout,
-                route = route,
-                heartRate = heartRate,
-                weather = weather,
+    private fun JSONObject.toPendingRestoreJournal(): PendingRestoreJournal {
+        check(getInt("version") == RESTORE_JOURNAL_VERSION) { "Неподдерживаемая версия журнала восстановления" }
+        val fingerprint = getString("backupSha256").lowercase()
+        require(fingerprint.matches(Regex("[0-9a-f]{64}"))) { "Некорректный fingerprint журнала восстановления" }
+        val array = optJSONArray("workouts") ?: JSONArray()
+        val workouts = (0 until array.length()).map { index ->
+            val item = array.getJSONObject(index)
+            RestoreWorkoutIdentity(
+                id = item.getString("id").also { require(it.isNotBlank() && it.length <= 128) },
+                sessionToken = item.getString("sessionToken").also { require(it.isNotBlank() && it.length <= 128) },
             )
         }
-
-        val ids = parsed.map { it.workout.id }
-        require(ids.size == ids.toSet().size) { "Backup содержит повторяющиеся workout id" }
-        for (entry in parsed) {
-            val workout = entry.workout
-            check(dao.getWorkout(workout.id) == null) { "Тренировка ${workout.id} уже существует" }
-            check(dao.getWorkoutBySessionToken(workout.sessionToken) == null) { "Сессия ${workout.sessionToken} уже существует" }
-        }
-
-        val previousSettings = settingsRepository.settings.first()
-        val restoredSettings = root.optJSONObject("settings")?.toSettings()
-        db.withTransaction {
-            parsed.forEach { entry ->
-                dao.insertWorkout(entry.workout)
-                entry.route.forEach { dao.insertRoutePoint(it.copy(rowId = 0)) }
-                entry.heartRate.forEach {
-                    check(
-                        dao.insertHeartRateSample(it.copy(rowId = 0)) > 0L
-                    ) {
-                        "Не удалось восстановить sample пульса"
-                    }
-                }
-
-                entry.weather.forEach {
-                    check(
-                        dao.insertWeatherSnapshot(it.copy(rowId = 0)) > 0L
-                    ) {
-                        "Не удалось восстановить weather snapshot"
-                    }
-                }
-            }
-        }
-        if (restoredSettings != null) {
-            try {
-                settingsRepository.restore(restoredSettings)
-            } catch (settingsError: Throwable) {
-                // Compensate the Room commit so restore remains all-or-nothing from the user's perspective.
-                try {
-                    db.withTransaction {
-                        parsed.forEach { entry -> check(dao.deleteWorkout(entry.workout.id) == 1) }
-                    }
-                    settingsRepository.restore(previousSettings)
-                } catch (rollbackError: Throwable) {
-                    settingsError.addSuppressed(rollbackError)
-                }
-                throw settingsError
-            }
-        }
-        parsed.size
+        require(workouts.map { it.id }.distinct().size == workouts.size) { "Журнал восстановления содержит повторяющиеся workout id" }
+        return PendingRestoreJournal(
+            backupSha256 = fingerprint,
+            targetSettings = optJSONObject("targetSettings")?.toSettings(),
+            workouts = workouts,
+        )
     }
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
     private fun validatePassphrase(passphrase: CharArray) {
         require(passphrase.size >= 8) { "Пароль резервной копии должен содержать минимум 8 символов" }
@@ -450,5 +584,8 @@ class PortableBackupManager(
         private const val BACKUP_FORMAT = "RunTrackPortableBackup"
         private const val BACKUP_VERSION = 4
         private const val MAX_BACKUP_BYTES = 256L * 1024L * 1024L
+        private const val RESTORE_JOURNAL_VERSION = 1
+        private const val RESTORE_JOURNAL_FILE = "pending_restore_journal_v1.json"
+        private const val MAX_RESTORE_JOURNAL_BYTES = 4 * 1024 * 1024
     }
 }

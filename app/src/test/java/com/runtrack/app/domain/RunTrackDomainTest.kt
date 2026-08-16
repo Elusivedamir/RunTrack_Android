@@ -115,6 +115,24 @@ class RunTrackDomainTest {
         assertEquals(points.last(), sampled.last())
     }
 
+    @Test fun routeNormalizationKeepsAntimeridianTrackLocallyContinuous() {
+        val points = listOf(
+            LocationSample(0L, 10.0, 179.8, 5f),
+            LocationSample(1_000L, 10.0, 179.9, 5f),
+            LocationSample(2_000L, 10.0, -179.9, 5f),
+            LocationSample(3_000L, 10.0, -179.8, 5f),
+        )
+
+        val normalized = RouteGeometry.normalize(points, 300f, 200f, 20f)
+
+        assertEquals(4, normalized.size)
+        assertTrue(normalized[0].x < normalized[1].x)
+        assertTrue(normalized[1].x < normalized[2].x)
+        assertTrue(normalized[2].x < normalized[3].x)
+        val adjacentGaps = normalized.zipWithNext { a, b -> abs(b.x - a.x) }
+        assertTrue(adjacentGaps.maxOrNull()!! < 200f)
+    }
+
     @Test fun segmentedElevationDoesNotBridgePauseAndSharedNormalizationPreservesPlacement() {
         val a = LocationSample(0, 55.0, 37.0, 5f, altitudeMeters = 100.0)
         val segments = listOf(

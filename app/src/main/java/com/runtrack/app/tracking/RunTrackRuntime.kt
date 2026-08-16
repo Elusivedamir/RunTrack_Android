@@ -1,6 +1,7 @@
 package com.runtrack.app.tracking
 
 import android.content.Context
+import android.util.Log
 import com.runtrack.app.data.RunTrackDatabase
 import com.runtrack.app.settings.SettingsRepository
 import com.runtrack.app.export.PortableBackupManager
@@ -8,9 +9,15 @@ import com.runtrack.app.export.WorkoutExportManager
 import com.runtrack.app.weather.WeatherRepository
 import com.runtrack.app.weather.WeatherUpdateCoordinator
 import com.runtrack.app.voice.VoiceAnnouncementManager
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 object RunTrackRuntime {
     @Volatile private var initialized = false
+    private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     lateinit var database: RunTrackDatabase
         private set
     lateinit var trackingRepository: TrackingRepository
@@ -49,6 +56,15 @@ object RunTrackRuntime {
         }
         resultNotificationManager = ResultNotificationManager(app)
         initialized = true
+        runtimeScope.launch {
+            try {
+                backupManager.recoverPendingRestore()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.e("RunTrackBackup", "Failed to recover interrupted backup restore", error)
+            }
+        }
     }
 
     fun requireInitialized() {

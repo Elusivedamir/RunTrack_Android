@@ -225,6 +225,49 @@ class WorkoutStateMachine(initial: WorkoutStatus = WorkoutStatus.IDLE) {
 data class NormalizedPoint(val x: Float, val y: Float)
 
 object RouteGeometry {
+    private data class LongitudeArc(
+        val westDegrees: Double,
+        val eastDegrees: Double,
+    ) {
+        fun unwrap(longitude: Double): Double {
+            var value = normalizeLongitude(longitude)
+            if (value < westDegrees) value += 360.0
+            return value
+        }
+    }
+
+    private fun minimalLongitudeArc(longitudes: List<Double>): LongitudeArc {
+        require(longitudes.isNotEmpty())
+        require(longitudes.all(Double::isFinite))
+        val sorted = longitudes.map(::normalizeLongitude).sorted()
+        if (sorted.size == 1) return LongitudeArc(sorted.first(), sorted.first())
+
+        var largestGap = Double.NEGATIVE_INFINITY
+        var largestGapStartIndex = 0
+        for (index in sorted.indices) {
+            val current = sorted[index]
+            val next = if (index == sorted.lastIndex) sorted.first() + 360.0 else sorted[index + 1]
+            val gap = next - current
+            if (gap > largestGap) {
+                largestGap = gap
+                largestGapStartIndex = index
+            }
+        }
+
+        val west = if (largestGapStartIndex == sorted.lastIndex) {
+            sorted.first()
+        } else {
+            sorted[largestGapStartIndex + 1]
+        }
+        val span = (360.0 - largestGap).coerceIn(0.0, 360.0)
+        return LongitudeArc(westDegrees = west, eastDegrees = west + span)
+    }
+
+    private fun normalizeLongitude(longitude: Double): Double {
+        require(longitude.isFinite())
+        return ((longitude + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
+    }
+
     /** Render-only decimation. Original accepted RoutePoint rows remain untouched in Room. */
     fun downsampleForRender(points: List<LocationSample>, maxPoints: Int = 1_000): List<LocationSample> {
         require(maxPoints >= 2) { "maxPoints must be >= 2" }
@@ -249,8 +292,9 @@ object RouteGeometry {
         }
 
         val meanLat = all.map { it.latitude }.average()
+        val longitudeArc = minimalLongitudeArc(all.map { it.longitude })
         val cosLat = cos(Math.toRadians(meanLat)).coerceAtLeast(0.01)
-        fun projected(p: LocationSample) = (p.longitude * cosLat) to p.latitude
+        fun projected(p: LocationSample) = (longitudeArc.unwrap(p.longitude) * cosLat) to p.latitude
         val projectedAll = all.map(::projected)
         val minX = projectedAll.minOf { it.first }
         val maxX = projectedAll.maxOf { it.first }
@@ -281,8 +325,9 @@ object RouteGeometry {
         if (points.size == 1) return listOf(NormalizedPoint(width / 2f, height / 2f))
 
         val meanLat = points.map { it.latitude }.average()
+        val longitudeArc = minimalLongitudeArc(points.map { it.longitude })
         val cosLat = cos(Math.toRadians(meanLat)).coerceAtLeast(0.01)
-        val raw = points.map { p -> (p.longitude * cosLat) to p.latitude }
+        val raw = points.map { p -> (longitudeArc.unwrap(p.longitude) * cosLat) to p.latitude }
         val minX = raw.minOf { it.first }
         val maxX = raw.maxOf { it.first }
         val minY = raw.minOf { it.second }

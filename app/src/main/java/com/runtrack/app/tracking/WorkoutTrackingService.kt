@@ -41,7 +41,7 @@ class WorkoutTrackingService : Service() {
     private var stepSensorRegistered = false
     private var stepWorkoutId: String? = null
     private var stepAccumulator: StepCounterAccumulator? = null
-    private val locationBatches = Channel<List<Location>>(Channel.UNLIMITED)
+    private val locationBatches = Channel<GenerationBatch<Location>>(Channel.UNLIMITED)
 
     private val stepListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
@@ -71,7 +71,12 @@ class WorkoutTrackingService : Service() {
             if (result.locations.isEmpty()) return
             // Callback runs on the main looper. Preserve callback arrival order and let one
             // consumer own all GPS -> Room sequencing.
-            locationBatches.trySend(result.locations.map { Location(it) })
+            locationBatches.trySend(
+                GenerationBatch(
+                    generation = registrationToken,
+                    items = result.locations.map { Location(it) },
+                )
+            )
         }
 
         override fun onLocationAvailability(availability: LocationAvailability) {
@@ -89,8 +94,9 @@ class WorkoutTrackingService : Service() {
         weatherUpdateCoordinator = RunTrackRuntime.weatherUpdateCoordinator
         createNotificationChannel()
         scope.launch {
-            consumeBatchesSafely(
+            consumeGenerationBatchesSafely(
                 batches = locationBatches,
+                isCurrentGeneration = locationRegistration::isRegistered,
                 orderBy = { it.elapsedRealtimeNanos },
                 process = ::processLocation,
                 onFailure = { error ->
