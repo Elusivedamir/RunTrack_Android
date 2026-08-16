@@ -17,20 +17,25 @@ if [[ ! -f "$APK" ]]; then
 fi
 
 echo
-echo "[1/6] Waiting for Android Emulator"
+echo "[1/7] Waiting for Android Emulator"
 adb wait-for-device
 
 echo
-echo "[2/6] Clearing old logcat"
+echo "[2/7] Running Android instrumentation tests"
+./gradlew --no-daemon --console=plain :app:connectedDebugAndroidTest \
+    2>&1 | tee ci-logs/07-connected-android-tests.log
+
+echo
+echo "[3/7] Clearing old logcat"
 adb logcat -c
 
 echo
-echo "[3/6] Installing APK"
+echo "[4/7] Installing APK"
 adb install -r "$APK" \
     | tee ci-logs/07-runtime-install.txt
 
 echo
-echo "[4/6] Starting MainActivity"
+echo "[5/7] Starting MainActivity"
 adb shell am force-stop "$PACKAGE"
 
 set +e
@@ -53,7 +58,7 @@ if [[ "$START_CODE" -ne 0 ]]; then
 fi
 
 echo
-echo "[5/6] Waiting for delayed startup crashes"
+echo "[6/7] Waiting for delayed startup crashes"
 sleep 12
 
 adb logcat -d -v threadtime \
@@ -96,7 +101,7 @@ if [[ -z "$PID" ]]; then
 fi
 
 echo
-echo "[6/6] Checking logcat for fatal RunTrack failures"
+echo "[7/7] Checking logcat for fatal RunTrack failures"
 
 if grep -E \
     'FATAL EXCEPTION.*|Process: com\.runtrack\.app|Unable to start activity.*com\.runtrack\.app|RuntimeException: Unable to.*com\.runtrack\.app|ANR in com\.runtrack\.app|Force finishing activity.*com\.runtrack\.app' \

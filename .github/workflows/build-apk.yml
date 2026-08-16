@@ -15,26 +15,28 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
 
       - name: Install required Android SDK packages
         run: |
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platform-tools" "emulator" "platforms;android-36" "build-tools;35.0.0"
 
-      - name: Set up Gradle 8.13
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.13"
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+
+      - name: Verify Gradle wrapper JAR checksum
+        run: |
+          echo "81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f  gradle/wrapper/gradle-wrapper.jar" | sha256sum -c -
 
       - name: Prepare diagnostic logs
         run: mkdir -p ci-logs
@@ -72,7 +74,7 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          gradle --no-daemon --continue --console=plain \
+          ./gradlew --no-daemon --continue --console=plain \
             :app:compileDebugKotlin \
             2>&1 | tee ci-logs/01-main-kotlin-compile.log
           CODE=${PIPESTATUS[0]}
@@ -87,7 +89,7 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          gradle --no-daemon --continue --console=plain \
+          ./gradlew --no-daemon --continue --console=plain \
             :app:testDebugUnitTest \
             2>&1 | tee ci-logs/02-unit-tests.log
           CODE=${PIPESTATUS[0]}
@@ -102,7 +104,7 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          gradle --no-daemon --continue --console=plain \
+          ./gradlew --no-daemon --continue --console=plain \
             :app:compileDebugAndroidTestKotlin \
             2>&1 | tee ci-logs/03-android-tests.log
           CODE=${PIPESTATUS[0]}
@@ -118,7 +120,7 @@ jobs:
         run: |
           set +e
 
-          gradle --no-daemon --continue --console=plain \
+          ./gradlew --no-daemon --continue --console=plain \
             :app:lintDebug \
             2>&1 | tee ci-logs/04-lint-gradle.log
 
@@ -151,12 +153,57 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          gradle --no-daemon --continue --console=plain \
+          ./gradlew --no-daemon --continue --console=plain \
             :app:assembleDebug \
             2>&1 | tee ci-logs/06-assemble-debug.log
           CODE=${PIPESTATUS[0]}
           echo "exit_code=$CODE"
           exit "$CODE"
+
+      - name: Build release APK
+        id: release_apk
+        continue-on-error: true
+        run: |
+          set +e
+          ./gradlew --no-daemon --continue --console=plain             :app:assembleRelease             2>&1 | tee ci-logs/06b-assemble-release.log
+          CODE=${PIPESTATUS[0]}
+          echo "exit_code=$CODE"
+          exit "$CODE"
+
+      - name: Verify Room schema history
+        id: room_schema
+        continue-on-error: true
+        run: |
+          set +e
+          SCHEMA_DIR="app/schemas/com.runtrack.app.data.RunTrackDatabase"
+          test -s "$SCHEMA_DIR/3.json" && test -s "$SCHEMA_DIR/4.json"
+          CODE=$?
+          if [ "$CODE" -eq 0 ]; then
+            # compileDebugKotlin ran KSP earlier. A diff means committed v4 is stale.
+            git diff --exit-code -- "$SCHEMA_DIR/4.json" || CODE=$?
+          fi
+          if [ "$CODE" -ne 0 ]; then
+            echo "Room schema history missing or stale" | tee ci-logs/06c-room-schema.log
+          else
+            echo "Room schema history present and current v4 matches KSP" | tee ci-logs/06c-room-schema.log
+          fi
+          exit "$CODE"
+
+      - name: Verify legacy prototype resources are absent
+        id: packaging
+        continue-on-error: true
+        run: |
+          set +e
+          unzip -l app/build/outputs/apk/debug/app-debug.apk > ci-logs/06d-apk-contents.txt
+          if grep -E 'screen_[0-9]{2}_.*\.png' ci-logs/06d-apk-contents.txt; then
+            echo "Legacy prototype screen PNGs are still packaged" | tee ci-logs/06d-packaging.log
+            exit 1
+          fi
+          python3 - <<'PY' | tee ci-logs/06d-packaging.log
+          from pathlib import Path
+          apk = Path("app/build/outputs/apk/debug/app-debug.apk")
+          print(f"debug APK bytes={apk.stat().st_size}")
+          PY
 
       - name: Verify offline voice package
         id: voice_apk
@@ -211,7 +258,7 @@ jobs:
       - name: Runtime startup smoke test
         id: smoke
         continue-on-error: true
-        uses: reactivecircus/android-emulator-runner@v2.38.0
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
           api-level: 35
           target: google_apis
@@ -252,7 +299,7 @@ jobs:
       # -------------------------------------------------
       - name: Upload full diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: RunTrack-full-diagnostics
           path: |
@@ -261,16 +308,28 @@ jobs:
             app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt
             app/build/reports/tests/testDebugUnitTest/
             app/build/test-results/testDebugUnitTest/
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
             app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release-unsigned.apk
+            app/schemas/**/*.json
           if-no-files-found: warn
 
       # Если APK реально построился — отдельный удобный artifact
       - name: Upload APK
         if: always() && steps.apk.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: RunTrack-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload unsigned release APK
+        if: always() && steps.release_apk.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: RunTrack-release-unsigned-apk
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
 
       # -------------------------------------------------
@@ -288,6 +347,9 @@ jobs:
           echo "Android tests:  ${{ steps.android_tests.outcome }}"
           echo "Lint:           ${{ steps.lint.outcome }}"
           echo "APK build:      ${{ steps.apk.outcome }}"
+          echo "Release build:  ${{ steps.release_apk.outcome }}"
+          echo "Room schemas:   ${{ steps.room_schema.outcome }}"
+          echo "Packaging:      ${{ steps.packaging.outcome }}"
           echo "Voice in APK:   ${{ steps.voice_apk.outcome }}"
           echo "AVD home:       ${{ steps.avd_home.outcome }}"
           echo "KVM setup:      ${{ steps.kvm.outcome }}"
@@ -302,6 +364,9 @@ jobs:
           [ "${{ steps.android_tests.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.lint.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.apk.outcome }}" = "success" ] || FAILED=1
+          [ "${{ steps.release_apk.outcome }}" = "success" ] || FAILED=1
+          [ "${{ steps.room_schema.outcome }}" = "success" ] || FAILED=1
+          [ "${{ steps.packaging.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.voice_apk.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.avd_home.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.kvm.outcome }}" = "success" ] || FAILED=1

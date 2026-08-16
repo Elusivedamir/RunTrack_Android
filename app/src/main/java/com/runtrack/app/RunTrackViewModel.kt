@@ -265,11 +265,22 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun resumeRecoveredWorkout(onResumed: () -> Unit = {}) = launchExclusive("recover") {
+        val gps = gpsChecker.basicStatus()
+        _gpsReadiness.value = gps
+        check(gps.finePermissionGranted) { "Нужно разрешение на точную геолокацию" }
+        check(gps.locationEnabled) { "Включите геолокацию Android" }
+
         if (tracking.resumeRecovered(System.currentTimeMillis(), SystemClock.elapsedRealtime())) {
-            ContextCompat.startForegroundService(
-                appContext,
-                Intent(appContext, WorkoutTrackingService::class.java).setAction(WorkoutTrackingService.ACTION_RESUME_UPDATES),
-            )
+            try {
+                ContextCompat.startForegroundService(
+                    appContext,
+                    Intent(appContext, WorkoutTrackingService::class.java)
+                        .setAction(WorkoutTrackingService.ACTION_RESUME_UPDATES),
+                )
+            } catch (error: Exception) {
+                tracking.requireRecovery(System.currentTimeMillis(), SystemClock.elapsedRealtime())
+                throw IllegalStateException("Не удалось возобновить GPS-службу", error)
+            }
             _liveTracking.value = tracking.snapshot(SystemClock.elapsedRealtime())
             onResumed()
         }
@@ -433,8 +444,11 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
                 try {
                     block()
                     _operation.value = UiOperationState.Idle
-                } catch (t: Throwable) {
-                    _operation.value = UiOperationState.Error(t.message ?: "Операция не выполнена")
+                } catch (cancelled: CancellationException) {
+                    _operation.value = UiOperationState.Idle
+                    throw cancelled
+                } catch (error: Exception) {
+                    _operation.value = UiOperationState.Error(error.message ?: "Операция не выполнена")
                 }
             }
         }

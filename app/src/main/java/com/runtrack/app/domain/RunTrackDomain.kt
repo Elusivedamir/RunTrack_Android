@@ -55,6 +55,13 @@ data class GpsFilterPolicy(
 
 sealed interface GpsValidation {
     data object Accepted : GpsValidation
+
+    /**
+     * The point is physically plausible but too far from the previous accepted fix to bridge
+     * safely. Persist it as the first point of a new route segment without adding gap distance.
+     */
+    data object Reanchor : GpsValidation
+
     data class Rejected(val reason: String) : GpsValidation
 }
 
@@ -87,6 +94,11 @@ class GpsPointFilter(private val policy: GpsFilterPolicy) {
         if (!sample.accuracyMeters.isFinite() || sample.accuracyMeters <= 0f) return GpsValidation.Rejected("invalid_accuracy")
         if (sample.accuracyMeters > policy.maxAccuracyMeters) return GpsValidation.Rejected("poor_accuracy")
 
+        val providerSpeed = sample.speedMps?.toDouble()
+        if (providerSpeed != null && providerSpeed.isFinite() && providerSpeed > policy.maxSpeedMps) {
+            return GpsValidation.Rejected("provider_speed")
+        }
+
         val previous = lastAccepted
         if (previous != null) {
             val currentClock = sample.monotonicMillis ?: sample.timestampMillis
@@ -95,13 +107,15 @@ class GpsPointFilter(private val policy: GpsFilterPolicy) {
             if (dt < policy.minTimestampDeltaMillis) return GpsValidation.Rejected("non_monotonic_or_too_frequent")
             val distance = Geo.distanceMeters(previous, sample)
             if (distance < policy.duplicateDistanceMeters) return GpsValidation.Rejected("duplicate")
-            if (distance > policy.maxJumpMeters) return GpsValidation.Rejected("impossible_jump")
             val impliedSpeed = distance / (dt / 1000.0)
-            if (!impliedSpeed.isFinite() || impliedSpeed > policy.maxSpeedMps) return GpsValidation.Rejected("impossible_speed")
-        }
-        val providerSpeed = sample.speedMps?.toDouble()
-        if (providerSpeed != null && providerSpeed.isFinite() && providerSpeed > policy.maxSpeedMps) {
-            return GpsValidation.Rejected("provider_speed")
+            if (!impliedSpeed.isFinite() || impliedSpeed > policy.maxSpeedMps) {
+                return GpsValidation.Rejected("impossible_speed")
+            }
+
+            // A long signal gap can legitimately exceed the fixed jump threshold. If elapsed
+            // realtime proves the movement speed is plausible, start a new route segment instead
+            // of permanently rejecting every later fix against an obsolete anchor.
+            if (distance > policy.maxJumpMeters) return GpsValidation.Reanchor
         }
         return GpsValidation.Accepted
     }
@@ -111,7 +125,7 @@ class GpsPointFilter(private val policy: GpsFilterPolicy) {
     /** Convenience for pure-domain callers where persistence cannot fail. */
     fun validate(sample: LocationSample): GpsValidation {
         val result = evaluate(sample)
-        if (result is GpsValidation.Accepted) accept(sample)
+        if (result !is GpsValidation.Rejected) accept(sample)
         return result
     }
 }

@@ -25,6 +25,16 @@ enum class HealthConnectAvailability {
     UNAVAILABLE,
 }
 
+internal fun healthConnectEndMillis(startedAtMillis: Long, elapsedMillis: Long): Long {
+    require(elapsedMillis > 0L) { "У тренировки некорректная длительность" }
+    require(startedAtMillis >= 0L) { "У тренировки некорректное время начала" }
+    return if (startedAtMillis > Long.MAX_VALUE - elapsedMillis) {
+        Long.MAX_VALUE
+    } else {
+        startedAtMillis + elapsedMillis
+    }
+}
+
 data class HealthConnectExportResult(
     val workoutId: String,
     val recordCount: Int,
@@ -76,8 +86,10 @@ class HealthConnectManager(context: Context) {
         }
 
         val startTime = Instant.ofEpochMilli(workout.startedAt)
-        val endMillis = workout.endedAt ?: (workout.startedAt + workout.elapsedMillis)
-        require(endMillis > workout.startedAt) { "У тренировки некорректный интервал времени" }
+        // The workout duration is measured from elapsedRealtime and survives wall-clock changes.
+        // Health Connect needs an absolute interval, so derive the end from that monotonic duration
+        // instead of trusting endedAt, which can move backwards if the system clock is changed.
+        val endMillis = healthConnectEndMillis(workout.startedAt, workout.elapsedMillis)
         val endTime = Instant.ofEpochMilli(endMillis)
         val zoneRules = ZoneId.systemDefault().rules
         val device = Device(type = Device.TYPE_PHONE)

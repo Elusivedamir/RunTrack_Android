@@ -44,6 +44,31 @@ class RunTrackDomainTest {
         assertTrue(filter.validate(LocationSample(61_000, 53.5200, 13.4050, 5f)) is GpsValidation.Rejected)
     }
 
+    @Test fun gpsFilterReanchorsPlausibleLongGapInsteadOfLockingOut() {
+        val filter = GpsPointFilter(GpsFilterPolicy.forType(WorkoutType.RUN))
+        val a = LocationSample(
+            timestampMillis = 1_000L,
+            latitude = 55.0,
+            longitude = 37.0,
+            accuracyMeters = 5f,
+            monotonicMillis = 1_000L,
+        )
+        val b = a.copy(
+            timestampMillis = 61_000L,
+            latitude = 55.0 + 220.0 / 111_111.0,
+            monotonicMillis = 61_000L,
+        )
+        val c = b.copy(
+            timestampMillis = 64_000L,
+            latitude = b.latitude + 12.0 / 111_111.0,
+            monotonicMillis = 64_000L,
+        )
+
+        assertTrue(filter.validate(a) is GpsValidation.Accepted)
+        assertTrue(filter.validate(b) is GpsValidation.Reanchor)
+        assertTrue(filter.validate(c) is GpsValidation.Accepted)
+    }
+
     @Test fun stateMachineSupportsExplicitManualPauseOnly() {
         val sm = WorkoutStateMachine()
         assertTrue(sm.transition(WorkoutStatus.PREPARING))

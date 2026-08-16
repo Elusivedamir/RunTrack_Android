@@ -21,6 +21,7 @@ import com.runtrack.app.domain.WorkoutType
 import com.runtrack.app.voice.KilometerAnnouncementTracker
 import com.runtrack.app.weather.WeatherUpdateCoordinator
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 
 class WorkoutTrackingService : Service() {
@@ -38,6 +39,7 @@ class WorkoutTrackingService : Service() {
     private var stepSensorRegistered = false
     private var stepWorkoutId: String? = null
     private var stepAccumulator: StepCounterAccumulator? = null
+    private val locationBatches = Channel<List<Location>>(Channel.UNLIMITED)
 
     private val stepListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
@@ -63,37 +65,10 @@ class WorkoutTrackingService : Service() {
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            val ordered = result.locations.sortedBy { it.elapsedRealtimeNanos }
-            scope.launch {
-                for (location in ordered) {
-                    val sample = location.toSample()
-
-                    val accepted = repository.onLocation(
-                        sample = sample,
-                        elapsedRealtimeMillis = location.elapsedRealtimeNanos / 1_000_000L,
-                    )
-
-                    /*
-                     * Weather is optional side work.
-                     *
-                     * Launch it separately so an HTTP timeout can never
-                     * stall GPS ingestion or Room route persistence.
-                     */
-                    if (accepted) {
-                        val workoutId =
-                            repository.state.value?.workoutId
-
-                        if (workoutId != null) {
-                            scope.launch {
-                                weatherUpdateCoordinator.onAcceptedLocation(
-                                    workoutId = workoutId,
-                                    sample = sample,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            if (result.locations.isEmpty()) return
+            // Callback runs on the main looper. Preserve callback arrival order and let one
+            // consumer own all GPS -> Room sequencing.
+            locationBatches.trySend(result.locations.map { Location(it) })
         }
 
         override fun onLocationAvailability(availability: LocationAvailability) {
@@ -109,6 +84,13 @@ class WorkoutTrackingService : Service() {
         repository = RunTrackRuntime.trackingRepository
         weatherUpdateCoordinator = RunTrackRuntime.weatherUpdateCoordinator
         createNotificationChannel()
+        scope.launch {
+            for (batch in locationBatches) {
+                for (location in batch.sortedBy { it.elapsedRealtimeNanos }) {
+                    processLocation(location)
+                }
+            }
+        }
         scope.launch {
             repository.state.collectLatest { snapshot ->
                 kilometerAnnouncementTracker.onSnapshot(snapshot).forEach {
@@ -126,7 +108,9 @@ class WorkoutTrackingService : Service() {
                     heartRateConnected = connected
                     if (foregroundStarted) {
                         val snapshot = repository.state.value
-                        startForegroundCompat(buildNotification(snapshot?.notificationText() ?: "Запись тренировки активна"))
+                        startForegroundSafely(
+                            buildNotification(snapshot?.notificationText() ?: "Запись тренировки активна")
+                        )
                     }
                 }
             }
@@ -173,7 +157,7 @@ class WorkoutTrackingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START_UPDATES -> {
-                ensureForeground(paused = false)
+                if (!ensureForeground(paused = false)) return START_NOT_STICKY
                 configureStepSensor(active = true, allowInitialize = true)
                 if (requestLocationUpdatesIfAllowed()) {
                     repository.state.value?.let {
@@ -182,12 +166,12 @@ class WorkoutTrackingService : Service() {
                 }
             }
             ACTION_RESUME_UPDATES -> {
-                ensureForeground(paused = false)
+                if (!ensureForeground(paused = false)) return START_NOT_STICKY
                 configureStepSensor(active = true, allowInitialize = false)
                 requestLocationUpdatesIfAllowed()
             }
             ACTION_PAUSE_UPDATES -> {
-                ensureForeground(paused = true)
+                if (!ensureForeground(paused = true)) return START_NOT_STICKY
                 stepAccumulator?.setActive(false)
                 removeLocationUpdates()
             }
@@ -207,14 +191,31 @@ class WorkoutTrackingService : Service() {
         .setCategory(NotificationCompat.CATEGORY_SERVICE)
         .build()
 
-    private fun ensureForeground(paused: Boolean) {
-        startForegroundCompat(buildNotification(if (paused) "Тренировка на паузе" else "Запись тренировки активна"))
+    private fun ensureForeground(paused: Boolean): Boolean =
+        startForegroundSafely(
+            buildNotification(if (paused) "Тренировка на паузе" else "Запись тренировки активна")
+        )
+
+    private fun startForegroundSafely(notification: Notification): Boolean = try {
+        startForegroundCompat(notification)
+        true
+    } catch (_: SecurityException) {
+        scope.launch {
+            repository.requireRecovery(System.currentTimeMillis(), SystemClock.elapsedRealtime())
+            stopSelfSafely()
+        }
+        false
     }
 
     private fun startForegroundCompat(notification: Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             var types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            if (heartRateConnected) types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            if (heartRateConnected) {
+                types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && shouldUseHealthForegroundType()) {
+                types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
+            }
             startForeground(NOTIFICATION_ID, notification, types)
         } else {
             startForeground(NOTIFICATION_ID, notification)
@@ -222,6 +223,40 @@ class WorkoutTrackingService : Service() {
         foregroundStarted = true
     }
 
+
+    private fun shouldUseHealthForegroundType(): Boolean {
+        val snapshot = repository.state.value ?: return false
+        if (snapshot.type == WorkoutType.BIKE) return false
+        if (
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return false
+        }
+        return sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null ||
+            sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) != null
+    }
+
+    private suspend fun processLocation(location: Location) {
+        val sample = location.toSample()
+        val accepted = repository.onLocation(
+            sample = sample,
+            elapsedRealtimeMillis = location.elapsedRealtimeNanos / 1_000_000L,
+        )
+
+        // Weather is optional side work and never blocks GPS -> Room persistence.
+        if (accepted) {
+            val workoutId = repository.state.value?.workoutId
+            if (workoutId != null) {
+                scope.launch {
+                    weatherUpdateCoordinator.onAcceptedLocation(
+                        workoutId = workoutId,
+                        sample = sample,
+                    )
+                }
+            }
+        }
+    }
 
     private fun updateNotification(text: String) {
         if (!foregroundStarted) return
@@ -334,7 +369,9 @@ class WorkoutTrackingService : Service() {
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, LOCATION_INTERVAL_MS)
             .setMinUpdateIntervalMillis(MIN_LOCATION_INTERVAL_MS)
             .setMinUpdateDistanceMeters(MIN_DISTANCE_METERS)
-            .setMaxUpdateDelayMillis(MAX_UPDATE_DELAY_MS)
+            // Do not batch fitness points: different batches may legally arrive out of order.
+            // Also require a fresh first point after start/resume so pause movement is never bridged.
+            .setMaxUpdateAgeMillis(0L)
             .build()
         try {
             fused.requestLocationUpdates(request, callback, Looper.getMainLooper())
@@ -371,6 +408,7 @@ class WorkoutTrackingService : Service() {
         unregisterStepSensor()
         checkpointJob?.cancel()
         checkpointJob = null
+        locationBatches.close()
         serviceJob.cancel()
         super.onDestroy()
     }
@@ -409,7 +447,6 @@ class WorkoutTrackingService : Service() {
 
         private const val LOCATION_INTERVAL_MS = 2_000L
         private const val MIN_LOCATION_INTERVAL_MS = 1_000L
-        private const val MAX_UPDATE_DELAY_MS = 4_000L
         private const val MIN_DISTANCE_METERS = 2f
         private const val CHECKPOINT_INTERVAL_MS = 15_000L
     }

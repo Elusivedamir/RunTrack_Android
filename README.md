@@ -1,57 +1,41 @@
-# RunTrack Android UI Prototype
+# RunTrack Android
 
-Это **визуальный Jetpack Compose прототип** на основе утверждённого референса из 20 экранов.
+RunTrack is a native Android fitness tracker implemented with Kotlin and Jetpack Compose.
 
-## Что уже есть
+## Current functional core
 
-- 20 экранов из исходного референса.
-- Единый portrait viewport.
-- Полноэкранный режим.
-- Свайп влево/вправо между соседними экранами.
-- Основные невидимые hotspots:
-  - быстрый старт;
-  - старт тренировки;
-  - пауза / продолжение / завершение;
-  - просмотр результата;
-  - вкладки Обзор / Карта / Маршрут;
-  - нижняя навигация Главная / История / Статистика / Профиль.
-- Долгое нажатие на любой экран открывает список всех 20 экранов.
+- Run / walk / bike workout lifecycle: start, pause, resume, finish, save and recovery after process loss.
+- Foreground GPS tracking with monotonic-time duration accounting and route segmentation.
+- Room persistence for workouts, route points, heart-rate samples and weather snapshots.
+- Step metrics for supported devices, BLE Heart Rate Service support, Health Connect export.
+- MapLibre + OpenStreetMap route display with a local Canvas fallback.
+- Encrypted portable backup/restore and workout export.
+- Offline Russian voice announcements generated during CI.
 
-## Важно
-
-Это **Phase 0 — visual prototype**. Экран пока рендерится из эталонного изображения.
-GPS, Google Maps, Room, Weather API, foreground tracking и настоящие UI-компоненты здесь сознательно ещё не реализованы.
-
-Цель этой версии — сначала утвердить внешний вид и переходы на реальном Android-устройстве.
-После утверждения каждый экран заменяется на настоящие Compose-компоненты без изменения бизнес-логики.
-
-## Stack
+## Toolchain
 
 - Kotlin 2.2.20
 - Android Gradle Plugin 8.12.2
-- Gradle 8.13
-- compileSdk / targetSdk 36
-- Jetpack Compose BOM 2026.06.00
-- activity-compose 1.13.0
+- Gradle 8.13 via the checked-in Gradle Wrapper
 - Java 17
+- compileSdk / targetSdk 36
+- minSdk 26
 
 ## Build
 
-Проект можно открыть в Android Studio и собрать `app`.
-
-Или через Gradle 8.13:
-
 ```bash
-gradle :app:assembleDebug
+./gradlew :app:assembleDebug
+./gradlew :app:testDebugUnitTest
+./gradlew :app:lintDebug
+./gradlew :app:assembleRelease
 ```
 
-APK:
+The release build produced by CI is unsigned until an explicit release signing configuration is supplied.
 
-```text
-app/build/outputs/apk/debug/app-debug.apk
-```
+## CI
 
-## GitHub Actions
+`.github/workflows/build-apk.yml` runs on every push to `main` and checks Kotlin compilation, unit tests, Android instrumentation tests on an emulator, lint, debug/release APK assembly, offline voice assets and a runtime startup smoke test. Diagnostic logs and APK artifacts are uploaded for every run.
 
-В проект включён `.github/workflows/build-apk.yml`.
-После push в GitHub workflow собирает debug APK и загружает его как artifact `RunTrack-UI-Prototype-debug-apk`.
+## Data safety
+
+Workout completion is persisted transactionally. Recoverable in-progress sessions are not assumed to still be recording after process death and require an explicit user recovery decision. Android platform backup is disabled; portable backups are encrypted by the app.

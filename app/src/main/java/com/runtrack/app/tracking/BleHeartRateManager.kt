@@ -218,19 +218,20 @@ class BleHeartRateManager(
             if (Build.VERSION.SDK_INT < 33 && characteristic.uuid == HEART_RATE_MEASUREMENT) {
                 @Suppress("DEPRECATION")
                 val value = characteristic.value?.copyOf() ?: return
-                scope.launch { handleMeasurement(value, safeName(gatt.device)) }
+                scope.launch { handleMeasurement(gatt, value) }
             }
         }
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             if (characteristic.uuid == HEART_RATE_MEASUREMENT) {
                 val snapshot = value.copyOf()
-                scope.launch { handleMeasurement(snapshot, safeName(gatt.device)) }
+                scope.launch { handleMeasurement(gatt, snapshot) }
             }
         }
     }
 
     private fun handleConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+        if (!isCurrentGatt(gatt)) return
         if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
             reconnectAttempt = 0
             val name = safeName(gatt.device)
@@ -256,6 +257,7 @@ class BleHeartRateManager(
     }
 
     private fun handleServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+        if (!isCurrentGatt(gatt)) return
         if (status != BluetoothGatt.GATT_SUCCESS) {
             failGatt("Не удалось обнаружить BLE-сервисы: $status")
             return
@@ -293,6 +295,7 @@ class BleHeartRateManager(
     }
 
     private fun handleDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+        if (!isCurrentGatt(gatt)) return
         if (descriptor.uuid != CCCD) return
         if (status != BluetoothGatt.GATT_SUCCESS) {
             failGatt("Ошибка подписки на пульс: $status")
@@ -305,8 +308,10 @@ class BleHeartRateManager(
         if (address != null) scope.launch(Dispatchers.IO) { settingsRepository.setHeartRateDevice(address, name) }
     }
 
-    private fun handleMeasurement(value: ByteArray, name: String) {
+    private fun handleMeasurement(gatt: BluetoothGatt, value: ByteArray) {
+        if (!isCurrentGatt(gatt)) return
         val bpm = HeartRateProtocol.parseMeasurement(value) ?: return
+        val name = safeName(gatt.device)
         _state.value = BleHeartRateState.Connected(name, bpm)
         scope.launch(Dispatchers.IO) {
             onMeasurement(bpm, System.currentTimeMillis(), SystemClock.elapsedRealtime())
@@ -320,13 +325,36 @@ class BleHeartRateManager(
         if (localScanner != null && hasScanPermission()) runCatching { localScanner.stopScan(scanCallback) }
     }
 
-    private fun closeGatt(target: BluetoothGatt? = gatt) {
-        connectTimeout?.cancel(); connectTimeout = null
-        if (target != null) {
-            if (target === gatt) gatt = null
-            if (hasConnectPermission()) runCatching { target.disconnect() }
-            runCatching { target.close() }
+    private fun closeGatt() {
+        connectTimeout?.cancel()
+        connectTimeout = null
+        val current = gatt
+        gatt = null
+        closeGattInstance(current)
+    }
+
+    private fun closeGatt(target: BluetoothGatt) {
+        if (target === gatt) {
+            closeGatt()
+        } else {
+            closeGattInstance(target)
         }
+    }
+
+    private fun closeGattInstance(target: BluetoothGatt?) {
+        if (target == null) return
+        if (hasConnectPermission()) runCatching { target.disconnect() }
+        runCatching { target.close() }
+    }
+
+    /**
+     * Android may deliver callbacks from a GATT instance after timeout/disconnect/reconnect.
+     * Such callbacks must never mutate or close the newer active connection.
+     */
+    private fun isCurrentGatt(callbackGatt: BluetoothGatt): Boolean {
+        if (callbackGatt === gatt) return true
+        closeGatt(callbackGatt)
+        return false
     }
 
     private fun failGatt(message: String) {

@@ -216,9 +216,13 @@ class TrackingRepository(private val db: RunTrackDatabase) {
 
         if (sm.state != WorkoutStatus.ACTIVE) return false
         val f = filter ?: return false
-        if (f.evaluate(sample) !is GpsValidation.Accepted) return false
+        val validation = f.evaluate(sample)
+        if (validation is GpsValidation.Rejected) return false
 
-        val previous = lastAccepted
+        val reanchor = validation is GpsValidation.Reanchor
+        val previous = if (reanchor) null else lastAccepted
+        val persistedSegmentIndex =
+            if (reanchor && lastAccepted != null) segmentIndex + 1 else segmentIndex
         val segmentDistance = previous?.let { Geo.distanceMeters(it, sample) } ?: 0.0
         val candidateDistance = accumulatedDistanceMeters + segmentDistance
         val moving = currentMovingMillis(elapsedRealtimeMillis)
@@ -228,7 +232,7 @@ class TrackingRepository(private val db: RunTrackDatabase) {
             timestampMillis = sample.timestampMillis,
             elapsedRealtimeMillis = monotonic,
             movingElapsedMillis = moving,
-            segmentIndex = segmentIndex,
+            segmentIndex = persistedSegmentIndex,
             latitude = sample.latitude,
             longitude = sample.longitude,
             accuracyMeters = sample.accuracyMeters,
@@ -257,6 +261,7 @@ class TrackingRepository(private val db: RunTrackDatabase) {
             check(dao.updateWorkout(updated) == 1)
         }
         accumulatedDistanceMeters = candidateDistance
+        segmentIndex = persistedSegmentIndex
         lastAccepted = sample
         f.accept(sample)
         routePointCount += 1

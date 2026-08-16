@@ -46,6 +46,7 @@ fun RunTrackPrototypeApp(viewModel: RunTrackViewModel = viewModel()) {
     val selectedId by viewModel.selectedWorkoutId.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val tracking by viewModel.liveTracking.collectAsStateWithLifecycle()
+    val operation by viewModel.operation.collectAsStateWithLifecycle()
     val view = LocalView.current
     val keepScreen = settings.keepScreenOn && tracking?.status == com.runtrack.app.domain.WorkoutStatus.ACTIVE
 
@@ -168,7 +169,18 @@ fun RunTrackPrototypeApp(viewModel: RunTrackViewModel = viewModel()) {
             AlertDialog(
                 onDismissRequest = {},
                 title = { Text("Незавершённая тренировка") },
-                text = { Text("RunTrack обнаружил сохранённую сессию, но не может доказать, что GPS-служба продолжала работать. Продолжите запись или завершите сохранённое состояние.") },
+                text = {
+                    val error = (operation as? UiOperationState.Error)?.message
+                    Text(
+                        buildString {
+                            append("RunTrack обнаружил сохранённую сессию, но не может доказать, что GPS-служба продолжала работать. Продолжите запись или завершите сохранённое состояние.")
+                            if (!error.isNullOrBlank()) {
+                                append("\n\n")
+                                append(error)
+                            }
+                        }
+                    )
+                },
                 confirmButton = {
                     TextButton(onClick = {
                         viewModel.resumeRecoveredWorkout {
