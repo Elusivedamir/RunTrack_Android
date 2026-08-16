@@ -71,6 +71,27 @@ internal suspend fun <T> consumeBatchesSafely(
 }
 
 /**
+ * Runs one durability checkpoint without hiding storage failures.
+ *
+ * Cancellation remains cooperative. Any ordinary checkpoint exception crosses the existing
+ * tracking recovery boundary before the caller stops its checkpoint loop.
+ */
+internal suspend fun checkpointWithRecoveryOnFailure(
+    checkpoint: suspend () -> Unit,
+    onFailure: suspend (Exception) -> Unit,
+): Boolean {
+    return try {
+        checkpoint()
+        true
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        onFailure(error)
+        false
+    }
+}
+
+/**
  * Makes the persisted PAUSED -> ACTIVE transition and service restart one recoverable operation.
  */
 internal suspend fun resumeWithRecoveryOnStartFailure(

@@ -104,4 +104,39 @@ class TrackingAsyncGuardsTest {
 
         assertEquals(1, recoveryCalls)
     }
+
+    @Test
+    fun checkpointFailureTriggersRecoveryAndStopsLoop() = runBlocking {
+        var recoveryCalls = 0
+        var captured: Exception? = null
+
+        val succeeded = checkpointWithRecoveryOnFailure(
+            checkpoint = { error("disk write failed") },
+            onFailure = { error ->
+                recoveryCalls += 1
+                captured = error
+            },
+        )
+
+        assertFalse(succeeded)
+        assertEquals(1, recoveryCalls)
+        assertEquals("disk write failed", captured?.message)
+    }
+
+    @Test
+    fun checkpointCancellationPropagatesWithoutRecovery() = runBlocking {
+        var recoveryCalled = false
+
+        try {
+            checkpointWithRecoveryOnFailure(
+                checkpoint = { throw CancellationException("cancel checkpoint") },
+                onFailure = { recoveryCalled = true },
+            )
+            fail("CancellationException must propagate")
+        } catch (cancelled: CancellationException) {
+            assertEquals("cancel checkpoint", cancelled.message)
+        }
+
+        assertFalse(recoveryCalled)
+    }
 }

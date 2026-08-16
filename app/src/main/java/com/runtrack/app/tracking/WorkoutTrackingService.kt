@@ -156,7 +156,16 @@ class WorkoutTrackingService : Service() {
                     unregisterStepSensor()
                     repository.configureStepTracking(false, nowWall)
                 }
-                runCatching { repository.checkpoint(nowWall, nowElapsed) }
+                val checkpointSucceeded = checkpointWithRecoveryOnFailure(
+                    checkpoint = {
+                        repository.checkpoint(nowWall, nowElapsed)
+                        Unit
+                    },
+                    onFailure = { error ->
+                        recoverAndStop("Durability checkpoint failed", error)
+                    },
+                )
+                if (!checkpointSucceeded) break
             }
         }
     }

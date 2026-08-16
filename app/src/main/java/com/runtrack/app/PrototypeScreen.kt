@@ -4,8 +4,20 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -13,7 +25,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.runtrack.app.domain.StepMetrics
+import com.runtrack.app.domain.WorkoutStatus
 import com.runtrack.app.domain.WorkoutType
+import com.runtrack.app.tracking.BleHeartRateState
+import com.runtrack.app.tracking.TrackingSnapshot
 
 private object Routes {
     const val HOME = "home"
@@ -47,6 +63,7 @@ fun RunTrackPrototypeApp(viewModel: RunTrackViewModel = viewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val tracking by viewModel.liveTracking.collectAsStateWithLifecycle()
     val operation by viewModel.operation.collectAsStateWithLifecycle()
+    val heartRateState by viewModel.heartRateState.collectAsStateWithLifecycle()
     val view = LocalView.current
     val keepScreen = settings.keepScreenOn && tracking?.status == com.runtrack.app.domain.WorkoutStatus.ACTIVE
 
@@ -91,8 +108,16 @@ fun RunTrackPrototypeApp(viewModel: RunTrackViewModel = viewModel()) {
     }
 
     LaunchedEffect(tracking?.status, selectedId) {
-        if (tracking?.status == com.runtrack.app.domain.WorkoutStatus.FINISHING && selectedId != null) {
-            nav.navigate(Routes.FINISH) { launchSingleTop = true }
+        when (tracking?.status) {
+            WorkoutStatus.ACTIVE ->
+                nav.navigate(Routes.ACTIVE) { launchSingleTop = true }
+            WorkoutStatus.MANUAL_PAUSED ->
+                nav.navigate(Routes.PAUSED) { launchSingleTop = true }
+            WorkoutStatus.FINISHING ->
+                if (selectedId != null) {
+                    nav.navigate(Routes.FINISH) { launchSingleTop = true }
+                }
+            else -> Unit
         }
     }
 
@@ -165,6 +190,18 @@ fun RunTrackPrototypeApp(viewModel: RunTrackViewModel = viewModel()) {
             }
         }
 
+        if (
+            tracking?.status == WorkoutStatus.ACTIVE ||
+            tracking?.status == WorkoutStatus.MANUAL_PAUSED
+        ) {
+            tracking?.let { snapshot ->
+                LiveWorkoutMetricsOverlay(
+                    snapshot = snapshot,
+                    heartRateState = heartRateState,
+                )
+            }
+        }
+
         if (tracking?.status == com.runtrack.app.domain.WorkoutStatus.RECOVERY_REQUIRED) {
             AlertDialog(
                 onDismissRequest = {},
@@ -197,5 +234,56 @@ fun RunTrackPrototypeApp(viewModel: RunTrackViewModel = viewModel()) {
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun LiveWorkoutMetricsOverlay(
+    snapshot: TrackingSnapshot,
+    heartRateState: BleHeartRateState,
+) {
+    val bpm = (heartRateState as? BleHeartRateState.Connected)?.bpm
+    val cadence = StepMetrics.cadenceStepsPerMinute(
+        stepCount = snapshot.stepCount,
+        movingMillis = snapshot.movingMillis,
+        reliable = snapshot.stepTrackingReliable,
+    )
+
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopEnd,
+    ) {
+        Row(
+            modifier = Modifier.padding(top = 64.dp, end = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            LiveMetricChip(
+                label = "Пульс",
+                value = bpm?.let { "$it уд/мин" } ?: "—",
+            )
+            LiveMetricChip(
+                label = "Каденс",
+                value = RunTrackFormatter.cadence(cadence),
+            )
+        }
+    }
+}
+
+@Composable
+private fun LiveMetricChip(
+    label: String,
+    value: String,
+) {
+    Surface(
+        color = Color(0xE6101C25),
+        shape = RoundedCornerShape(10.dp),
+        shadowElevation = 2.dp,
+    ) {
+        Text(
+            text = "$label · $value",
+            color = Color.White,
+            fontSize = 10.sp,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+        )
     }
 }

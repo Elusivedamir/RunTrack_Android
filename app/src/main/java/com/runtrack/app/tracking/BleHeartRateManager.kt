@@ -127,6 +127,10 @@ class BleHeartRateManager(
             _state.value = BleHeartRateState.Error("Bluetooth-устройство недоступно")
             return
         }
+        // A manual connection supersedes every delayed automatic reconnect.
+        // Otherwise an old reconnect timer can wake up later and close this new GATT session.
+        reconnectJob?.cancel()
+        reconnectJob = null
         stopScanInternal()
         userDisconnected = false
         reconnectCounter.reset()
