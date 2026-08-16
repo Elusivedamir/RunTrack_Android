@@ -249,17 +249,18 @@ private fun MapLibreRouteMap(
 }
 
 private fun paddedBounds(points: List<LocationSample>): BoundingBox {
-    val west = points.minOf { it.longitude }
-    val east = points.maxOf { it.longitude }
+    val longitudeArc = RouteLongitudeGeometry.minimalArc(points.map { it.longitude })
     val south = points.minOf { it.latitude }
     val north = points.maxOf { it.latitude }
-    val lonPad = max((east - west) * 0.08, 0.00045)
+    val lonPad = max(longitudeArc.spanDegrees * 0.08, 0.00045)
     val latPad = max((north - south) * 0.08, 0.00045)
 
+    // MapLibre Android explicitly supports unwrapped longitude bounds (for example -190..-170)
+    // for a narrow box crossing the antimeridian. Do not clamp these values back to +/-180.
     return BoundingBox(
-        west = (west - lonPad).coerceAtLeast(-180.0),
+        west = longitudeArc.westDegrees - lonPad,
         south = (south - latPad).coerceAtLeast(-90.0),
-        east = (east + lonPad).coerceAtMost(180.0),
+        east = longitudeArc.eastDegrees + lonPad,
         north = (north + latPad).coerceAtMost(90.0),
     )
 }
@@ -290,7 +291,7 @@ private fun CanvasRouteMap(
             drawLine(road, Offset(0f, size.height * .32f), Offset(size.width, size.height * .62f), 6f)
             drawLine(road, Offset(size.width * .18f, 0f), Offset(size.width * .72f, size.height), 5f)
 
-            val normalizedRoutes = RouteGeometry.normalizeRoutes(routes, size.width, size.height, 24.dp.toPx())
+            val normalizedRoutes = RouteLongitudeGeometry.normalizeRoutes(routes, size.width, size.height, 24.dp.toPx())
             normalizedRoutes.forEachIndexed { index, normalized ->
                 val color = RouteColors[index % RouteColors.size]
                 if (normalized.size >= 2) {

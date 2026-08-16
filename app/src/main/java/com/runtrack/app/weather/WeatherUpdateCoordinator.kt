@@ -1,5 +1,6 @@
 package com.runtrack.app.weather
 
+import android.os.SystemClock
 import com.runtrack.app.domain.LocationSample
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -16,18 +17,20 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - provider/network failure -> retry no sooner than 5 minutes;
  * - only one request may be in flight;
  * - after process restart Room is checked before another network call.
+ *
+ * Persisted weather timestamps use wall clock because they must survive process/device restarts.
+ * In-process retry deadlines use elapsed realtime so changing the system clock cannot extend or
+ * shorten a backoff window.
  */
 class WeatherUpdateCoordinator(
     private val repository: WeatherRepository,
     private val refreshIntervalMillis: Long = DEFAULT_REFRESH_INTERVAL_MS,
     private val failureRetryIntervalMillis: Long = DEFAULT_FAILURE_RETRY_INTERVAL_MS,
-    private val clock: () -> Long = { System.currentTimeMillis() },
+    private val wallClock: () -> Long = { System.currentTimeMillis() },
+    private val monotonicClock: () -> Long = { SystemClock.elapsedRealtime() },
 ) {
     private val inFlight = AtomicBoolean(false)
-
-    private val stateLock = Any()
-    private var trackedWorkoutId: String? = null
-    private var nextAllowedAttemptAtMillis: Long = 0L
+    private val refreshGate = WeatherRefreshGate()
 
     init {
         require(refreshIntervalMillis > 0L)
@@ -60,29 +63,38 @@ class WeatherUpdateCoordinator(
         }
 
         try {
-            val now = clock()
+            val nowWallClockMillis = wallClock()
+            val nowMonotonicMillis = monotonicClock()
 
-            if (!reserveAttempt(workoutId, now)) {
+            if (
+                !refreshGate.reserve(
+                    workoutId = workoutId,
+                    nowMonotonicMillis = nowMonotonicMillis,
+                    retryDelayMillis = failureRetryIntervalMillis,
+                )
+            ) {
                 return WeatherRefreshResult.Backoff
             }
 
             /*
-             * Room is source of truth for refresh age.
-             * This also prevents a duplicate request after process restart.
+             * Room is source of truth for refresh age after process restart.
+             * A persisted timestamp that is now in the future means wall clock moved backwards;
+             * it must not create a multi-hour artificial "fresh" window.
              */
             val latest = repository.getLatestSnapshot(workoutId)
 
             if (latest != null) {
-                val ageMillis =
-                    (now - latest.fetchedAt).coerceAtLeast(0L)
+                val remainingFreshMillis = remainingFreshWeatherMillis(
+                    nowWallClockMillis = nowWallClockMillis,
+                    fetchedAtWallClockMillis = latest.fetchedAt,
+                    refreshIntervalMillis = refreshIntervalMillis,
+                )
 
-                if (ageMillis < refreshIntervalMillis) {
-                    setNextAllowed(
+                if (remainingFreshMillis != null) {
+                    refreshGate.schedule(
                         workoutId = workoutId,
-                        timestampMillis = safeAdd(
-                            latest.fetchedAt,
-                            refreshIntervalMillis,
-                        ),
+                        nowMonotonicMillis = nowMonotonicMillis,
+                        delayMillis = remainingFreshMillis,
                     )
                     return WeatherRefreshResult.FreshEnough
                 }
@@ -116,63 +128,12 @@ class WeatherUpdateCoordinator(
         }
     }
 
-    /**
-     * Reserve one provider attempt.
-     *
-     * A failed network request retains the short retry deadline set here.
-     * A successful request replaces it with the longer refresh interval.
-     */
-    private fun reserveAttempt(
-        workoutId: String,
-        nowMillis: Long,
-    ): Boolean = synchronized(stateLock) {
-        if (trackedWorkoutId != workoutId) {
-            trackedWorkoutId = workoutId
-            nextAllowedAttemptAtMillis = 0L
-        }
-
-        if (nowMillis < nextAllowedAttemptAtMillis) {
-            return@synchronized false
-        }
-
-        nextAllowedAttemptAtMillis =
-            safeAdd(nowMillis, failureRetryIntervalMillis)
-
-        true
-    }
-
-    private fun scheduleSuccessfulRefresh(
-        workoutId: String,
-    ) {
-        setNextAllowed(
+    private fun scheduleSuccessfulRefresh(workoutId: String) {
+        refreshGate.schedule(
             workoutId = workoutId,
-            timestampMillis = safeAdd(
-                clock(),
-                refreshIntervalMillis,
-            ),
+            nowMonotonicMillis = monotonicClock(),
+            delayMillis = refreshIntervalMillis,
         )
-    }
-
-    private fun setNextAllowed(
-        workoutId: String,
-        timestampMillis: Long,
-    ) = synchronized(stateLock) {
-        if (trackedWorkoutId == workoutId) {
-            nextAllowedAttemptAtMillis = timestampMillis
-        }
-    }
-
-    private fun safeAdd(
-        base: Long,
-        delta: Long,
-    ): Long {
-        if (delta <= 0L) return base
-
-        return if (base > Long.MAX_VALUE - delta) {
-            Long.MAX_VALUE
-        } else {
-            base + delta
-        }
     }
 
     companion object {

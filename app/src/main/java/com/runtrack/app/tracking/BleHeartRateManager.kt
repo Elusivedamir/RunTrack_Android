@@ -69,7 +69,7 @@ class BleHeartRateManager(
     private var reconnectJob: Job? = null
     private var targetDevice: BluetoothDevice? = null
     private var userDisconnected = false
-    private var reconnectAttempt = 0
+    private val reconnectCounter = BleReconnectCounter(MAX_RECONNECT_ATTEMPTS)
 
     fun refreshSystemState() {
         val system = initialState()
@@ -129,7 +129,7 @@ class BleHeartRateManager(
         }
         stopScanInternal()
         userDisconnected = false
-        reconnectAttempt = 0
+        reconnectCounter.reset()
         targetDevice = device
         connectDevice(device)
     }
@@ -233,15 +233,22 @@ class BleHeartRateManager(
     private fun handleConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
         if (!isCurrentGatt(gatt)) return
         if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
-            reconnectAttempt = 0
             val name = safeName(gatt.device)
             _state.value = BleHeartRateState.Subscribing(name)
             val started = runCatching { gatt.discoverServices() }.getOrDefault(false)
             if (!started) failGatt("Не удалось начать обнаружение BLE-сервисов")
         } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
             closeGatt(gatt)
-            if (!userDisconnected && targetDevice != null && reconnectAttempt < MAX_RECONNECT_ATTEMPTS && initialState() == BleHeartRateState.Idle) {
-                val attempt = ++reconnectAttempt
+            val attempt = if (
+                !userDisconnected &&
+                targetDevice != null &&
+                initialState() == BleHeartRateState.Idle
+            ) {
+                reconnectCounter.nextAttemptOrNull()
+            } else {
+                null
+            }
+            if (attempt != null) {
                 _state.value = BleHeartRateState.Error("Пульсометр отключён · переподключение $attempt/$MAX_RECONNECT_ATTEMPTS")
                 reconnectJob?.cancel()
                 reconnectJob = scope.launch {
@@ -302,6 +309,7 @@ class BleHeartRateManager(
             return
         }
         connectTimeout?.cancel(); connectTimeout = null
+        reconnectCounter.reset()
         val name = safeName(gatt.device)
         _state.value = BleHeartRateState.Connected(name)
         val address = runCatching { gatt.device.address }.getOrNull()
