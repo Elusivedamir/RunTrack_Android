@@ -55,8 +55,18 @@ fun NativeMainScreen(
     var showQuickStart by rememberSaveable { mutableStateOf(true) }
     var typeFilter by remember { mutableStateOf(HomeTypeFilter.ALL) }
     var periodDays by remember { mutableIntStateOf(30) }
+    var currentWallClockMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
-    val cutoff = remember(periodDays) { System.currentTimeMillis() - periodDays * 86_400_000L }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000L)
+            currentWallClockMillis = System.currentTimeMillis()
+        }
+    }
+
+    val cutoff = remember(periodDays, currentWallClockMillis) {
+        currentWallClockMillis - periodDays * 86_400_000L
+    }
     val visible = remember(allRoutes, typeFilter, cutoff) {
         allRoutes.filter { relation ->
             relation.workout.startedAt >= cutoff && when (typeFilter) {

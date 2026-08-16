@@ -151,6 +151,22 @@ class RunTrackViewModel(application: Application) : AndroidViewModel(application
                 _stats.value = buildStats(completed, relations)
             }
         }
+        // "Current week" is a function of calendar time as well as Room data. Recompute when the
+        // local date or timezone changes even if the database has not emitted a new history row.
+        viewModelScope.launch {
+            var lastZone = ZoneId.systemDefault()
+            var lastDay = LocalDate.now(lastZone)
+            while (true) {
+                delay(30_000L)
+                val zone = ZoneId.systemDefault()
+                val day = LocalDate.now(zone)
+                if (zone != lastZone || day != lastDay) {
+                    lastZone = zone
+                    lastDay = day
+                    _stats.value = buildStats(history.value, _allRoutes.value)
+                }
+            }
+        }
         refreshHealthConnect()
     }
 

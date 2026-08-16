@@ -49,6 +49,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.os.ConfigurationCompat
 import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.runtrack.app.data.RoutePointEntity
 import com.runtrack.app.data.WeatherSnapshotEntity
@@ -1483,9 +1486,37 @@ private fun SettingsScreen(viewModel: RunTrackViewModel, onNavigate: (Int) -> Un
         if (uri != null) { pendingRestoreUri = uri; passphrase = ""; localError = null; restorePassDialog = true }
     }
     val busy = operation is UiOperationState.Running
+    val operationError = (operation as? UiOperationState.Error)?.message
 
     NativePage(title = "Настройки", onBack = { onNavigate(14) }, bottomNavSelected = 3, onNavigate = onNavigate) {
         LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 14.dp)) {
+            if (operationError != null) {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(RtRed.copy(alpha = 0.10f), RoundedCornerShape(13.dp))
+                            .clickable { viewModel.clearOperationError() }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.ErrorOutline,
+                            contentDescription = null,
+                            tint = RtRed,
+                            modifier = Modifier.size(22.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            operationError,
+                            color = RtRed,
+                            fontSize = 10.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text("Скрыть", color = RtMuted, fontSize = 9.sp)
+                    }
+                }
+            }
             item { SettingSwitch(Icons.Outlined.Notifications, "Уведомления", "Необязательные итоги тренировок", settings.notificationsEnabled, ::setOptionalNotifications) }
             item { SettingSwitch(Icons.Outlined.VolumeUp, "Голосовые подсказки", "«Старт» и каждый полный километр · офлайн", settings.voiceAnnouncementsEnabled, viewModel::setVoiceAnnouncementsEnabled) }
             item { SettingSwitch(Icons.Outlined.Visibility, "Не выключать экран", "Только во время активной тренировки", settings.keepScreenOn, viewModel::setKeepScreenOn) }
@@ -1609,10 +1640,26 @@ private fun ConnectionsScreen(viewModel: RunTrackViewModel, onNavigate: (Int) ->
     val healthPermissionLauncher = rememberLauncherForActivityResult(
         PermissionController.createRequestPermissionResultContract()
     ) { granted -> viewModel.onHealthConnectPermissionsResult(granted) }
-    LaunchedEffect(Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    fun refreshExternalConnectionState() {
         viewModel.refreshBluetoothState()
         viewModel.onPermissionStateChanged()
         viewModel.refreshHealthConnect()
+    }
+
+    LaunchedEffect(Unit) {
+        refreshExternalConnectionState()
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshExternalConnectionState()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     fun requestBlePermissions() {

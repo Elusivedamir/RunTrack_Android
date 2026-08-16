@@ -23,17 +23,35 @@ class StepMetricsTest {
         assertNull(StepMetrics.strideLengthMeters(100L, 100.0, false))
     }
 
-    @Test fun stepCounterIsPauseSafeAndRebaselinesOnResume() {
+    @Test fun stepCounterUsesPausedBaselineWithoutDroppingFirstProvenActiveDelta() {
         val accumulator = StepCounterAccumulator()
         accumulator.setActive(true)
         assertEquals(0L, accumulator.onCounter(1_000L))
         assertEquals(5L, accumulator.onCounter(1_005L))
+
         accumulator.setActive(false)
+        // This sample proves the pause baseline moved to 1015.
         assertEquals(0L, accumulator.onCounter(1_015L))
+
         accumulator.setActive(true)
-        assertEquals(0L, accumulator.onCounter(1_017L))
+        assertEquals(2L, accumulator.onCounter(1_017L))
         assertEquals(3L, accumulator.onCounter(1_020L))
-        assertEquals(8L, accumulator.workoutSteps)
+        assertEquals(10L, accumulator.workoutSteps)
+    }
+
+    @Test fun stepCounterStillDiscardsAmbiguousResumeDeltaWithoutPausedSample() {
+        val accumulator = StepCounterAccumulator()
+        accumulator.setActive(true)
+        assertEquals(0L, accumulator.onCounter(2_000L))
+        assertEquals(5L, accumulator.onCounter(2_005L))
+
+        accumulator.setActive(false)
+        accumulator.setActive(true)
+
+        // No sensor sample arrived during pause, so 2005 -> 2012 may contain paused steps.
+        assertEquals(0L, accumulator.onCounter(2_012L))
+        assertEquals(2L, accumulator.onCounter(2_014L))
+        assertEquals(7L, accumulator.workoutSteps)
     }
 
     @Test fun counterResetCannotCreateSyntheticDelta() {

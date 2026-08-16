@@ -12,6 +12,7 @@ import com.runtrack.app.domain.PortableBackupCrypto
 import com.runtrack.app.domain.GoalKind
 import com.runtrack.app.domain.UnitSystem
 import com.runtrack.app.domain.WorkoutStatus
+import com.runtrack.app.domain.WorkoutTime
 import com.runtrack.app.settings.RunTrackSettings
 import com.runtrack.app.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
@@ -241,12 +242,18 @@ class PortableBackupManager(
     private fun JSONObject.toWorkout(): WorkoutEntity {
         val id = getString("id").also { require(it.isNotBlank() && it.length <= 128) }
         val type = getString("type").also { require(it in setOf("RUN", "WALK", "BIKE")) }
-        val startedAt = getLong("startedAt")
-        val endedAt = if (has("endedAt") && !isNull("endedAt")) getLong("endedAt") else null
+        val startedAt = getLong("startedAt").also {
+            require(it >= 0L) { "Некорректное время начала тренировки" }
+        }
+        val rawEndedAt = if (has("endedAt") && !isNull("endedAt")) getLong("endedAt") else null
         val distance = getDouble("distanceMeters").also { require(it.isFinite() && it >= 0) }
         val elapsed = getLong("elapsedMillis").also { require(it >= 0L) }
         val moving = getLong("movingMillis").also { require(it in 0L..elapsed) }
-        if (endedAt != null) require(endedAt >= startedAt) { "Некорректные границы времени тренировки" }
+        // Older RunTrack versions could persist endedAt < startedAt after a backwards wall-clock
+        // adjustment. Such backups are normalized from the authoritative monotonic duration.
+        val endedAt = rawEndedAt?.let {
+            WorkoutTime.resolveEndMillis(startedAt, it, elapsed)
+        }
         val status = getString("status").also { require(it == WorkoutStatus.COMPLETED.name) }
         val restoredStepCount =
             if (has("stepCount") && !isNull("stepCount")) {

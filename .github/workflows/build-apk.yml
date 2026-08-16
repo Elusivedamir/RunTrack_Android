@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 permissions:
   contents: read
@@ -170,6 +172,90 @@ jobs:
           echo "exit_code=$CODE"
           exit "$CODE"
 
+      - name: Sign release APK with permanent RunTrack key
+        id: sign_release
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          RUNTRACK_RELEASE_KEYSTORE_B64: ${{ secrets.RUNTRACK_RELEASE_KEYSTORE_B64 }}
+          RUNTRACK_RELEASE_STORE_PASSWORD: ${{ secrets.RUNTRACK_RELEASE_STORE_PASSWORD }}
+          RUNTRACK_RELEASE_KEY_PASSWORD: ${{ secrets.RUNTRACK_RELEASE_KEY_PASSWORD }}
+          RUNTRACK_RELEASE_KEY_ALIAS: ${{ secrets.RUNTRACK_RELEASE_KEY_ALIAS }}
+          RUNTRACK_RELEASE_CERT_SHA256: ${{ secrets.RUNTRACK_RELEASE_CERT_SHA256 }}
+        run: |
+          set +x
+          set -euo pipefail
+
+          for name in \
+            RUNTRACK_RELEASE_KEYSTORE_B64 \
+            RUNTRACK_RELEASE_STORE_PASSWORD \
+            RUNTRACK_RELEASE_KEY_PASSWORD \
+            RUNTRACK_RELEASE_KEY_ALIAS \
+            RUNTRACK_RELEASE_CERT_SHA256
+          do
+            test -n "${!name:-}" || {
+              echo "Missing required release-signing secret: $name" \
+                | tee ci-logs/06e-release-signing.log
+              exit 1
+            }
+          done
+
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          ZIPALIGN="$BUILD_TOOLS/zipalign"
+          APKSIGNER="$BUILD_TOOLS/apksigner"
+          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+          ALIGNED="app/build/outputs/apk/release/app-release-aligned.apk"
+          SIGNED="app/build/outputs/apk/release/app-release-signed.apk"
+          KEYSTORE="$RUNNER_TEMP/runtrack-release.jks"
+
+          test -x "$ZIPALIGN"
+          test -x "$APKSIGNER"
+          test -s "$UNSIGNED"
+
+          printf '%s' "$RUNTRACK_RELEASE_KEYSTORE_B64" \
+            | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+
+          "$ZIPALIGN" -f -p 4 "$UNSIGNED" "$ALIGNED"
+
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$RUNTRACK_RELEASE_KEY_ALIAS" \
+            --ks-pass env:RUNTRACK_RELEASE_STORE_PASSWORD \
+            --key-pass env:RUNTRACK_RELEASE_KEY_PASSWORD \
+            --out "$SIGNED" \
+            "$ALIGNED"
+
+          "$APKSIGNER" verify --verbose --print-certs "$SIGNED" \
+            | tee ci-logs/06e-release-signing.log
+
+          ACTUAL="$(
+            "$APKSIGNER" verify --print-certs "$SIGNED" \
+              | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
+              | head -n 1 \
+              | tr '[:upper:]' '[:lower:]'
+          )"
+          EXPECTED="$(
+            printf '%s' "$RUNTRACK_RELEASE_CERT_SHA256" \
+              | tr '[:upper:]' '[:lower:]'
+          )"
+
+          test -n "$ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "Release certificate mismatch." \
+              | tee -a ci-logs/06e-release-signing.log
+            echo "expected=$EXPECTED" \
+              | tee -a ci-logs/06e-release-signing.log
+            echo "actual=$ACTUAL" \
+              | tee -a ci-logs/06e-release-signing.log
+            exit 1
+          fi
+
+          echo "Permanent release certificate verified: $ACTUAL" \
+            | tee -a ci-logs/06e-release-signing.log
+
+          rm -f "$KEYSTORE" "$ALIGNED"
+
       - name: Verify Room schema history
         id: room_schema
         continue-on-error: true
@@ -312,24 +398,25 @@ jobs:
             app/build/outputs/androidTest-results/
             app/build/outputs/apk/debug/app-debug.apk
             app/build/outputs/apk/release/app-release-unsigned.apk
+            app/build/outputs/apk/release/app-release-signed.apk
             app/schemas/**/*.json
           if-no-files-found: warn
 
       # Если APK реально построился — отдельный удобный artifact
-      - name: Upload APK
+      - name: Upload debug test APK
         if: always() && steps.apk.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: RunTrack-debug-apk
+          name: RunTrack-debug-test-only-ephemeral-signature
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Upload unsigned release APK
-        if: always() && steps.release_apk.outcome == 'success'
+      - name: Upload signed release APK
+        if: always() && github.event_name != 'pull_request' && steps.sign_release.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: RunTrack-release-unsigned-apk
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          name: RunTrack-release-signed-apk
+          path: app/build/outputs/apk/release/app-release-signed.apk
           if-no-files-found: error
 
       # -------------------------------------------------
@@ -348,6 +435,7 @@ jobs:
           echo "Lint:           ${{ steps.lint.outcome }}"
           echo "APK build:      ${{ steps.apk.outcome }}"
           echo "Release build:  ${{ steps.release_apk.outcome }}"
+          echo "Release signing:${{ steps.sign_release.outcome }}"
           echo "Room schemas:   ${{ steps.room_schema.outcome }}"
           echo "Packaging:      ${{ steps.packaging.outcome }}"
           echo "Voice in APK:   ${{ steps.voice_apk.outcome }}"
@@ -365,6 +453,9 @@ jobs:
           [ "${{ steps.lint.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.apk.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.release_apk.outcome }}" = "success" ] || FAILED=1
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            [ "${{ steps.sign_release.outcome }}" = "success" ] || FAILED=1
+          fi
           [ "${{ steps.room_schema.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.packaging.outcome }}" = "success" ] || FAILED=1
           [ "${{ steps.voice_apk.outcome }}" = "success" ] || FAILED=1

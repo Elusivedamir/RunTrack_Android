@@ -379,7 +379,7 @@ class TrackingRepository(private val db: RunTrackDatabase) {
         val goalReachedAt = current.goalReachedAt ?: if (isGoalReached(current.toGoal(), metrics)) wallClockMillis else null
         val finishing = current.copy(
             status = WorkoutStatus.FINISHING.name,
-            endedAt = wallClockMillis,
+            endedAt = WorkoutTime.resolveEndMillis(current.startedAt, wallClockMillis, elapsed),
             elapsedMillis = metrics.elapsedMillis,
             movingMillis = metrics.movingMillis,
             distanceMeters = metrics.distanceMeters,

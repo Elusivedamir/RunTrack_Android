@@ -9,6 +9,9 @@ captures/
 .externalNativeBuild/
 .cxx/
 secrets.properties
+*.jks
+*.keystore
+signing.properties
 /app/src/main/assets/voice_ru/
 __pycache__/
 *.pyc

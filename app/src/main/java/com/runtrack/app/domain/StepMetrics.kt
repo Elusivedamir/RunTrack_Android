@@ -23,11 +23,22 @@ class StepCounterAccumulator(initialWorkoutSteps: Long = 0L) {
     private var active = false
     private var lastCounterValue: Long? = null
     private var discardNextCounterDelta = true
+    private var counterObservedWhileInactive = false
 
     fun setActive(value: Boolean) {
         if (active == value) return
-        active = value
-        if (value) discardNextCounterDelta = true
+        if (!value) {
+            active = false
+            counterObservedWhileInactive = false
+            return
+        }
+
+        active = true
+        // If TYPE_STEP_COUNTER delivered a fresh baseline while paused, the next delta is
+        // provably post-resume and must not be discarded. If no paused sample was observed,
+        // one ambiguous delta is still discarded so paused steps can never be counted.
+        discardNextCounterDelta = !counterObservedWhileInactive
+        counterObservedWhileInactive = false
     }
 
     fun onCounter(rawValue: Long): Long {
@@ -36,9 +47,16 @@ class StepCounterAccumulator(initialWorkoutSteps: Long = 0L) {
         lastCounterValue = rawValue
         if (previous == null) {
             discardNextCounterDelta = false
+            if (!active) counterObservedWhileInactive = true
             return 0L
         }
         if (rawValue < previous) {
+            discardNextCounterDelta = false
+            if (!active) counterObservedWhileInactive = true
+            return 0L
+        }
+        if (!active) {
+            counterObservedWhileInactive = true
             discardNextCounterDelta = false
             return 0L
         }
@@ -46,7 +64,6 @@ class StepCounterAccumulator(initialWorkoutSteps: Long = 0L) {
             discardNextCounterDelta = false
             return 0L
         }
-        if (!active) return 0L
         val delta = rawValue - previous
         if (delta <= 0L || workoutSteps > Long.MAX_VALUE - delta) return 0L
         workoutSteps += delta
