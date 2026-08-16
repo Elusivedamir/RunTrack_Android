@@ -79,7 +79,7 @@ dependencies {
         exclude(group = "org.maplibre.gl", module = "android-sdk")
     }
     implementation("org.maplibre.gl:android-sdk-opengl:13.0.2")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.4.0")
     implementation("androidx.health.connect:connect-client:1.1.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:core-ktx:1.7.0")
